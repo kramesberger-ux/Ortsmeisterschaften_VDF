@@ -237,8 +237,7 @@ def reset_championship(db):
 
 
 def clear_reset_checkboxes():
-    st.session_state["reset_backup_confirmed"] = False
-    st.session_state["reset_confirmed"] = False
+    st.session_state["reset_form_version"] = st.session_state.get("reset_form_version", 0) + 1
 
 
 def update_assignments_for_participant(participant, db):
@@ -1103,8 +1102,15 @@ def page_home(db):
             file_name="ortsmeisterschaft-zwischenspeicher-vor-neustart.json",
             mime="application/json",
         )
-        backup_confirmed = st.checkbox("Zwischenspeicher wurde heruntergeladen", key="reset_backup_confirmed")
-        reset_confirmed = st.checkbox("Ich moechte alle Meisterschaftsdaten loeschen", key="reset_confirmed")
+        reset_form_version = st.session_state.setdefault("reset_form_version", 0)
+        backup_confirmed = st.checkbox(
+            "Zwischenspeicher wurde heruntergeladen",
+            key=f"reset_backup_confirmed_{reset_form_version}",
+        )
+        reset_confirmed = st.checkbox(
+            "Ich moechte alle Meisterschaftsdaten loeschen",
+            key=f"reset_confirmed_{reset_form_version}",
+        )
         if st.button(
             "Neue Meisterschaft beginnen",
             disabled=not (backup_confirmed and reset_confirmed),
