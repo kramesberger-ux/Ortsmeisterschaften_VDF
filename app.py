@@ -236,6 +236,11 @@ def reset_championship(db):
     db.commit()
 
 
+def clear_reset_checkboxes():
+    st.session_state["reset_backup_confirmed"] = False
+    st.session_state["reset_confirmed"] = False
+
+
 def update_assignments_for_participant(participant, db):
     db.query(Anmeldung).filter_by(teilnehmer_id=participant.id).delete(synchronize_session=False)
     db.flush()
@@ -1105,6 +1110,7 @@ def page_home(db):
             disabled=not (backup_confirmed and reset_confirmed),
         ):
             reset_championship(db)
+            clear_reset_checkboxes()
             st.success("Neue Meisterschaft wurde gestartet. Alle eingegebenen Daten wurden zurueckgesetzt.")
             refresh()
 
