@@ -809,7 +809,6 @@ def build_certificates_pdf(rows, settings):
     date_text = settings["date_text"].strip()
 
     for row in rows:
-        draw_logo(pdf, 82.5, 18, 45, 22)
         draw_centered_certificate_text(
             pdf,
             row["name"],
@@ -875,6 +874,8 @@ def render_certificate_pdf_preview(row, settings):
         f"""
         <div style="
             aspect-ratio: 1 / 1.414;
+            width: min(100%, 105mm);
+            margin: 0 auto;
             overflow: auto;
             border: 1px solid #d7dce1;
             box-shadow: 0 8px 22px rgba(31, 41, 51, 0.12);
