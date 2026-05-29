@@ -61,6 +61,7 @@ class Teilnehmer(Base):
     geschlecht = Column(String(10), nullable=False)
     brust = Column(Boolean, default=False)
     freistil = Column(Boolean, default=False)
+    gast = Column(Boolean, default=False)
     staffel = Column(String(100), default="")
     anmeldungen = relationship("Anmeldung", back_populates="teilnehmer", cascade="all, delete-orphan")
     laufbahnen = relationship("LaufBahn", back_populates="teilnehmer")

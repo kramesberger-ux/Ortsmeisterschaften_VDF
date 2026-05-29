@@ -1,10 +1,11 @@
-import base64
 import csv
 import json
+import re
 from datetime import datetime
 from io import BytesIO, StringIO
 from pathlib import Path
 
+import fitz
 import pandas as pd
 import streamlit as st
 from reportlab.lib import colors
@@ -55,14 +56,18 @@ st.set_page_config(
 def init_database():
     Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
-        columns = connection.execute(text("PRAGMA table_info(bewerb)")).fetchall()
-        column_names = {column[1] for column in columns}
-        if "ortsmeister_relevant" not in column_names:
+        bewerb_columns = connection.execute(text("PRAGMA table_info(bewerb)")).fetchall()
+        bewerb_column_names = {column[1] for column in bewerb_columns}
+        if "ortsmeister_relevant" not in bewerb_column_names:
             connection.execute(text("ALTER TABLE bewerb ADD COLUMN ortsmeister_relevant BOOLEAN DEFAULT 0"))
-        if "ortsmeister_maennlich" not in column_names:
+        if "ortsmeister_maennlich" not in bewerb_column_names:
             connection.execute(text("ALTER TABLE bewerb ADD COLUMN ortsmeister_maennlich BOOLEAN DEFAULT 0"))
-        if "ortsmeister_weiblich" not in column_names:
+        if "ortsmeister_weiblich" not in bewerb_column_names:
             connection.execute(text("ALTER TABLE bewerb ADD COLUMN ortsmeister_weiblich BOOLEAN DEFAULT 0"))
+        teilnehmer_columns = connection.execute(text("PRAGMA table_info(teilnehmer)")).fetchall()
+        teilnehmer_column_names = {column[1] for column in teilnehmer_columns}
+        if "gast" not in teilnehmer_column_names:
+            connection.execute(text("ALTER TABLE teilnehmer ADD COLUMN gast BOOLEAN DEFAULT 0"))
     create_sample_data()
 
 
@@ -163,6 +168,7 @@ def export_backup(db):
                 "geschlecht": item.geschlecht,
                 "brust": bool(item.brust),
                 "freistil": bool(item.freistil),
+                "gast": bool(item.gast),
                 "staffel": item.staffel or "",
             }
             for item in db.query(Teilnehmer).order_by(Teilnehmer.id).all()
@@ -209,6 +215,7 @@ def restore_backup(db, data):
         db.add(Bewerb(**item))
     db.flush()
     for item in data.get("teilnehmer", []):
+        item.setdefault("gast", False)
         db.add(Teilnehmer(**item))
     db.flush()
     for item in data.get("anmeldungen", []):
@@ -265,6 +272,7 @@ def participant_rows(participants):
             "Geschlecht": participant.geschlecht,
             "Brust": bool(participant.brust),
             "Freistil": bool(participant.freistil),
+            "Gast": bool(participant.gast),
             "Staffel": participant.staffel or "-",
             "Zugeordnete Bewerbe": ", ".join(
                 anmeldung.bewerb.full_name()
@@ -391,6 +399,8 @@ def build_ortsmeister_results(db, selected_bewerb_ids, gender):
 
     participants = {}
     for lane in lanes:
+        if lane.teilnehmer.gast:
+            continue
         if normalized_gender(lane.teilnehmer.geschlecht) != gender:
             continue
         participant = participants.setdefault(
@@ -419,6 +429,54 @@ def build_ortsmeister_results(db, selected_bewerb_ids, gender):
 
     rows.sort(key=lambda item: (item["gesamt_ms"], item["teilnehmer"].id))
     return rows
+
+
+def distance_group(bewerb):
+    text_value = f"{bewerb.distanz} {bewerb.name}".lower()
+    match = re.search(r"(^|\D)(50|100)\s*m?", text_value)
+    if not match:
+        return None
+    return f"{match.group(2)}m"
+
+
+def build_day_fastest_results(db):
+    lanes = (
+        db.query(LaufBahn)
+        .options(
+            joinedload(LaufBahn.teilnehmer),
+            joinedload(LaufBahn.lauf).joinedload(Lauf.bewerb).joinedload(Bewerb.jahrgang),
+        )
+        .join(Lauf, LaufBahn.lauf_id == Lauf.id)
+        .join(Bewerb, Lauf.bewerb_id == Bewerb.id)
+        .filter(LaufBahn.zeit_ms > 0)
+        .all()
+    )
+
+    groups = {
+        "50m": {"maennlich": [], "weiblich": []},
+        "100m": {"maennlich": [], "weiblich": []},
+    }
+    for lane in lanes:
+        if is_staffel_bewerb(lane.lauf.bewerb):
+            continue
+        distance = distance_group(lane.lauf.bewerb)
+        gender = normalized_gender(lane.teilnehmer.geschlecht) if lane.teilnehmer else ""
+        if distance not in groups or gender not in groups[distance]:
+            continue
+        groups[distance][gender].append(
+            {
+                "teilnehmer": lane.teilnehmer,
+                "bewerb": lane.lauf.bewerb,
+                "lauf": lane.lauf.laufnummer,
+                "bahn": lane.bahn,
+                "zeit_ms": lane.zeit_ms,
+            }
+        )
+
+    for gender_groups in groups.values():
+        for rows in gender_groups.values():
+            rows.sort(key=lambda item: (item["zeit_ms"], item["teilnehmer"].id))
+    return groups
 
 
 def results_csv(results):
@@ -808,26 +866,10 @@ def render_certificate_pdf_preview(row, settings):
             "time": "01:15.20",
         }
     preview_pdf = build_certificates_pdf([row], settings)
-    encoded_pdf = base64.b64encode(preview_pdf).decode("ascii")
-
-    st.markdown(
-        f"""
-        <style>
-            .certificate-pdf-preview {{
-                width: 100%;
-                min-height: 720px;
-                border: 1px solid #d7dce1;
-                box-shadow: 0 12px 30px rgba(31, 41, 51, 0.12);
-                background: #f7f8fa;
-            }}
-        </style>
-        <iframe
-            class="certificate-pdf-preview"
-            src="data:application/pdf;base64,{encoded_pdf}#toolbar=0&navpanes=0&scrollbar=0"
-        ></iframe>
-        """,
-        unsafe_allow_html=True,
-    )
+    document = fitz.open(stream=preview_pdf, filetype="pdf")
+    page = document.load_page(0)
+    pixmap = page.get_pixmap(matrix=fitz.Matrix(1.8, 1.8), alpha=False)
+    st.image(pixmap.tobytes("png"), use_container_width=True)
 
 
 def page_home(db):
@@ -873,6 +915,7 @@ def page_anmeldung(db):
             discipline_col, relay_col = st.columns([1, 1])
             brust = discipline_col.checkbox("Brust")
             freistil = discipline_col.checkbox("Freistil")
+            gast = discipline_col.checkbox("Gast")
             staffel = relay_col.text_input("Staffel")
             submitted = st.form_submit_button("Speichern", type="primary")
 
@@ -885,6 +928,7 @@ def page_anmeldung(db):
                     geschlecht=geschlecht,
                     brust=brust,
                     freistil=freistil,
+                    gast=gast,
                     staffel=staffel.strip(),
                 )
                 db.add(participant)
@@ -897,8 +941,8 @@ def page_anmeldung(db):
 
     with import_col:
         st.subheader("CSV Import")
-        st.caption("Format: Vorname;Nachname;Geburtsjahr;Geschlecht;Brust;Freistil;Staffel")
-        template = "Vorname;Nachname;Geburtsjahr;Geschlecht;Brust;Freistil;Staffel\r\nMax;Mustermann;2012;m;ja;nein;Team A\r\nErika;Musterfrau;2011;w;nein;ja;Team A\r\n"
+        st.caption("Format: Vorname;Nachname;Geburtsjahr;Geschlecht;Brust;Freistil;Staffel;Gast")
+        template = "Vorname;Nachname;Geburtsjahr;Geschlecht;Brust;Freistil;Staffel;Gast\r\nMax;Mustermann;2012;m;ja;nein;Team A;nein\r\nErika;Musterfrau;2011;w;nein;ja;Team A;ja\r\n"
         st.download_button(
             "CSV Vorlage herunterladen",
             data=template.encode("utf-8"),
@@ -914,9 +958,9 @@ def page_anmeldung(db):
             for row in rows:
                 if len(row) < 7:
                     continue
-                vorname, nachname, geburtsjahr, geschlecht, brust, freistil, staffel = [
-                    item.strip() for item in row[:7]
-                ]
+                values = [item.strip() for item in row]
+                vorname, nachname, geburtsjahr, geschlecht, brust, freistil, staffel = values[:7]
+                gast = values[7] if len(values) > 7 else ""
                 if not geburtsjahr.isdigit() or not vorname or not nachname:
                     continue
                 participant = Teilnehmer(
@@ -926,6 +970,7 @@ def page_anmeldung(db):
                     geschlecht=geschlecht,
                     brust=parse_bool(brust),
                     freistil=parse_bool(freistil),
+                    gast=parse_bool(gast),
                     staffel=staffel,
                 )
                 db.add(participant)
@@ -980,6 +1025,7 @@ def page_anmeldung(db):
                 disc_col1, disc_col2 = st.columns(2)
                 new_brust = disc_col1.checkbox("Brust", value=bool(selected_participant.brust))
                 new_freistil = disc_col2.checkbox("Freistil", value=bool(selected_participant.freistil))
+                new_gast = disc_col2.checkbox("Gast", value=bool(selected_participant.gast))
                 save_participant = st.form_submit_button("Teilnehmer speichern und Zuordnung aktualisieren", type="primary")
 
             action_col1, action_col2 = st.columns(2)
@@ -1001,6 +1047,7 @@ def page_anmeldung(db):
                     selected_participant.staffel = new_staffel.strip()
                     selected_participant.brust = new_brust
                     selected_participant.freistil = new_freistil
+                    selected_participant.gast = new_gast
                     update_assignments_for_participant(selected_participant, db)
                     st.success("Teilnehmer und Zuordnung wurden aktualisiert.")
                     refresh()
@@ -1029,6 +1076,7 @@ def page_anmeldung(db):
                 "Geburtsjahr": st.column_config.NumberColumn("Geburtsjahr", min_value=1900, max_value=2100, step=1),
                 "Brust": st.column_config.CheckboxColumn("Brust"),
                 "Freistil": st.column_config.CheckboxColumn("Freistil"),
+                "Gast": st.column_config.CheckboxColumn("Gast"),
                 "Loeschen": st.column_config.CheckboxColumn("Loeschen"),
             },
             key="participants_editor",
@@ -1048,6 +1096,7 @@ def page_anmeldung(db):
                     participant.geschlecht = str(row["Geschlecht"]).strip()
                     participant.brust = bool(row["Brust"])
                     participant.freistil = bool(row["Freistil"])
+                    participant.gast = bool(row["Gast"])
                     staffel_value = "" if str(row["Staffel"]).strip() == "-" else str(row["Staffel"]).strip()
                     participant.staffel = staffel_value
                     update_assignments_for_participant(participant, db)
@@ -1611,6 +1660,42 @@ def page_ortsmeister(db):
                 st.info("Keine vollstaendige Wertung fuer diese Kategorie.")
 
 
+def page_tagesschnellste(db):
+    st.title("Tagesschnellste")
+    st.caption("Schnellste Zeiten auf 50m und 100m, getrennt nach Maennlich und Weiblich. Gaeste werden mitgewertet.")
+
+    groups = build_day_fastest_results(db)
+    distance_tabs = st.tabs(["50m", "100m"])
+    for tab, distance in zip(distance_tabs, ["50m", "100m"]):
+        with tab:
+            male_col, female_col = st.columns(2)
+            for column, title, gender in [
+                (male_col, "Maennlich", "maennlich"),
+                (female_col, "Weiblich", "weiblich"),
+            ]:
+                rows = groups[distance][gender]
+                with column:
+                    st.subheader(title)
+                    if rows:
+                        winner = rows[0]
+                        st.metric("Schnellste Zeit", format_ms(winner["zeit_ms"]), winner["teilnehmer"].display_name())
+                        table_rows = [
+                            {
+                                "Rang": index,
+                                "Teilnehmer": item["teilnehmer"].display_name(),
+                                "Gast": "ja" if item["teilnehmer"].gast else "nein",
+                                "Bewerb": f"ID {item['bewerb'].id}: {item['bewerb'].full_name()}",
+                                "Lauf": item["lauf"],
+                                "Bahn": item["bahn"],
+                                "Zeit": format_ms(item["zeit_ms"]),
+                            }
+                            for index, item in enumerate(rows, start=1)
+                        ]
+                        st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Keine Zeiten vorhanden.")
+
+
 def page_urkunden(db):
     st.title("Urkunden")
     st.caption("Serienbrief fuer vorgedruckte Urkunden. Das PDF enthaelt nur die einzudruckenden Textfelder.")
@@ -1758,6 +1843,7 @@ def main():
                 "Zeitnehmung",
                 "Ergebnisse",
                 "Ortsmeister",
+                "Tagesschnellste",
                 "Staffelwertung",
                 "Urkunden",
                 "Datensicherung",
@@ -1779,6 +1865,8 @@ def main():
             page_ergebnisse(db)
         elif page == "Ortsmeister":
             page_ortsmeister(db)
+        elif page == "Tagesschnellste":
+            page_tagesschnellste(db)
         elif page == "Staffelwertung":
             page_staffelwertung(db)
         elif page == "Urkunden":
