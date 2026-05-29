@@ -1,3 +1,4 @@
+import base64
 import csv
 import json
 import re
@@ -869,7 +870,21 @@ def render_certificate_pdf_preview(row, settings):
     document = fitz.open(stream=preview_pdf, filetype="pdf")
     page = document.load_page(0)
     pixmap = page.get_pixmap(matrix=fitz.Matrix(1.8, 1.8), alpha=False)
-    st.image(pixmap.tobytes("png"), use_container_width=True)
+    encoded_png = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
+    st.markdown(
+        f"""
+        <div style="
+            height: 15cm;
+            overflow: auto;
+            border: 1px solid #d7dce1;
+            box-shadow: 0 8px 22px rgba(31, 41, 51, 0.12);
+            background: #f7f8fa;
+        ">
+            <img src="data:image/png;base64,{encoded_png}" style="width: 100%; display: block;" />
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def page_home(db):
