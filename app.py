@@ -230,6 +230,12 @@ def restore_backup(db, data):
     db.commit()
 
 
+def reset_championship(db):
+    for model in [LaufBahn, Lauf, Anmeldung, Teilnehmer, Bewerb, Jahrgang]:
+        db.query(model).delete(synchronize_session=False)
+    db.commit()
+
+
 def update_assignments_for_participant(participant, db):
     db.query(Anmeldung).filter_by(teilnehmer_id=participant.id).delete(synchronize_session=False)
     db.flush()
@@ -719,6 +725,166 @@ def build_startlist_pdf(bewerbe):
     return buffer.getvalue()
 
 
+def build_full_report_pdf(db):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=34 * mm,
+        bottomMargin=20 * mm,
+        title="Bericht Ortsmeisterschaften",
+    )
+    styles = getSampleStyleSheet()
+    styles.add(
+        ParagraphStyle(
+            name="ReportTitle",
+            parent=styles["Title"],
+            fontName="Helvetica-Bold",
+            fontSize=21,
+            leading=25,
+            textColor=colors.HexColor("#1f2933"),
+            alignment=TA_CENTER,
+            spaceAfter=8 * mm,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="ReportSection",
+            parent=styles["Heading2"],
+            fontName="Helvetica-Bold",
+            fontSize=13,
+            leading=16,
+            textColor=colors.HexColor("#c4001a"),
+            spaceBefore=5 * mm,
+            spaceAfter=2 * mm,
+        )
+    )
+
+    def add_table(story, rows, widths):
+        table = Table(rows, colWidths=widths, repeatRows=1)
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2933")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f8fa")]),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7dce1")),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
+            )
+        )
+        story.extend([table, Spacer(1, 4 * mm)])
+
+    participants = db.query(Teilnehmer).order_by(Teilnehmer.id).all()
+    bewerbe = db.query(Bewerb).options(joinedload(Bewerb.jahrgang)).order_by(Bewerb.id).all()
+    results = build_results(db)
+    relay_rows, relay_average = build_relay_results(db)
+    day_fastest = build_day_fastest_results(db)
+
+    story = [
+        Paragraph("Bericht Ortsmeisterschaften", styles["ReportTitle"]),
+        Paragraph(f"Stand {datetime.now().strftime('%d.%m.%Y %H:%M')}", styles["Normal"]),
+        Spacer(1, 5 * mm),
+    ]
+
+    relay_count = len({p.staffel.strip() for p in participants if p.staffel and p.staffel.strip()})
+    story.append(Paragraph("Kennzahlen", styles["ReportSection"]))
+    add_table(
+        story,
+        [
+            ["Kennzahl", "Wert"],
+            ["Teilnehmer gesamt", str(len(participants))],
+            ["Teilnehmer Freistil", str(sum(1 for p in participants if p.freistil))],
+            ["Teilnehmer Brust", str(sum(1 for p in participants if p.brust))],
+            ["Gaeste", str(sum(1 for p in participants if p.gast))],
+            ["Staffeln", str(relay_count)],
+            ["Bewerbe", str(len(bewerbe))],
+        ],
+        [80 * mm, 35 * mm],
+    )
+
+    story.append(Paragraph("Teilnehmer", styles["ReportSection"]))
+    participant_rows_pdf = [["ID", "Name", "Jg.", "G", "Brust", "Freistil", "Gast", "Staffel"]]
+    for p in participants:
+        participant_rows_pdf.append(
+            [
+                str(p.id),
+                p.display_name(),
+                str(p.geburtsjahr),
+                p.geschlecht,
+                "ja" if p.brust else "nein",
+                "ja" if p.freistil else "nein",
+                "ja" if p.gast else "nein",
+                p.staffel or "-",
+            ]
+        )
+    add_table(story, participant_rows_pdf, [10 * mm, 42 * mm, 14 * mm, 10 * mm, 18 * mm, 20 * mm, 14 * mm, 30 * mm])
+
+    story.append(Paragraph("Bewerbe", styles["ReportSection"]))
+    competition_rows = [["ID", "Bewerb", "OM"]]
+    for b in bewerbe:
+        competition_rows.append([str(b.id), b.full_name(), "ja" if b.ortsmeister_relevant else "nein"])
+    add_table(story, competition_rows, [12 * mm, 130 * mm, 16 * mm])
+
+    story.append(Paragraph("Startlisten", styles["ReportSection"]))
+    start_rows = [["Bewerb", "Lauf", "Bahn", "Teilnehmer/Staffel"]]
+    for b in bewerbe:
+        is_relay = is_staffel_bewerb(b)
+        for lauf in sorted(b.laufe, key=lambda item: item.laufnummer):
+            for bahn in sorted(lauf.laufbahnen, key=lambda item: item.bahn):
+                name = "-"
+                if bahn.teilnehmer:
+                    name = bahn.teilnehmer.staffel if is_relay else bahn.teilnehmer.display_name()
+                start_rows.append([f"ID {b.id}", str(lauf.laufnummer), str(bahn.bahn), name or "-"])
+    add_table(story, start_rows, [20 * mm, 14 * mm, 14 * mm, 110 * mm])
+
+    story.append(Paragraph("Ergebnisse", styles["ReportSection"]))
+    result_rows = [["Platz", "Bewerb", "Teilnehmer/Staffel", "Zeit"]]
+    for bewerb_data in results:
+        is_relay = is_staffel_bewerb(bewerb_data["bewerb"])
+        for rank, item in enumerate(bewerb_data["results"], start=1):
+            name = item["teilnehmer"].staffel if is_relay and item["teilnehmer"].staffel else item["teilnehmer"].display_name()
+            result_rows.append([str(rank), f"ID {bewerb_data['bewerb'].id}", name, format_ms(item["zeit_ms"])])
+    add_table(story, result_rows, [14 * mm, 22 * mm, 92 * mm, 30 * mm])
+
+    story.append(Paragraph("Ortsmeister", styles["ReportSection"]))
+    om_bewerbe_m = [b for b in bewerbe if not is_staffel_bewerb(b) and b.ortsmeister_relevant and normalized_gender(b.geschlecht) in {"maennlich", "mixed"}]
+    om_bewerbe_w = [b for b in bewerbe if not is_staffel_bewerb(b) and b.ortsmeister_relevant and normalized_gender(b.geschlecht) in {"weiblich", "mixed"}]
+    om_rows = [["Kategorie", "Rang", "Teilnehmer", "Gesamtzeit"]]
+    for label, gender, selected in [("Maennlich", "maennlich", om_bewerbe_m), ("Weiblich", "weiblich", om_bewerbe_w)]:
+        for rank, item in enumerate(build_ortsmeister_results(db, [b.id for b in selected], gender), start=1):
+            om_rows.append([label, str(rank), item["teilnehmer"].display_name(), format_ms(item["gesamt_ms"])])
+    add_table(story, om_rows, [28 * mm, 14 * mm, 82 * mm, 34 * mm])
+
+    story.append(Paragraph("Tagesschnellste", styles["ReportSection"]))
+    fastest_rows = [["Distanz", "Kategorie", "Rang", "Teilnehmer", "Zeit"]]
+    for distance, gender_groups in day_fastest.items():
+        for gender, rows in gender_groups.items():
+            label = "Maennlich" if gender == "maennlich" else "Weiblich"
+            for rank, item in enumerate(rows[:10], start=1):
+                fastest_rows.append([distance, label, str(rank), item["teilnehmer"].display_name(), format_ms(item["zeit_ms"])])
+    add_table(story, fastest_rows, [22 * mm, 28 * mm, 14 * mm, 70 * mm, 24 * mm])
+
+    story.append(Paragraph("Staffelwertung", styles["ReportSection"]))
+    relay_table_rows = [["Rang", "Staffel", "Zeit", "Abweichung"]]
+    for rank, item in enumerate(relay_rows, start=1):
+        relay_table_rows.append([str(rank), item["staffel"], format_ms(item["zeit_ms"]), format_ms(item["abweichung_ms"])])
+    if relay_average:
+        relay_table_rows.append(["", "Durchschnitt", format_ms(relay_average), ""])
+    add_table(story, relay_table_rows, [14 * mm, 86 * mm, 28 * mm, 30 * mm])
+
+    doc.build(story, onFirstPage=draw_pdf_frame, onLaterPages=draw_pdf_frame)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def certificate_rows(results, max_place):
     rows = []
     for bewerb_data in results:
@@ -912,6 +1078,35 @@ def page_home(db):
 
     st.subheader("Naechste Schritte")
     st.write("Jahrgaenge und Bewerbe anlegen, Teilnehmende erfassen, Startlisten erzeugen und Zeiten eintragen.")
+
+    st.subheader("Bericht und Neustart")
+    action_col1, action_col2 = st.columns(2)
+    with action_col1:
+        st.download_button(
+            "Vollstaendigen PDF Bericht herunterladen",
+            data=build_full_report_pdf(db),
+            file_name="bericht-ortsmeisterschaft.pdf",
+            mime="application/pdf",
+            type="primary",
+        )
+
+    with action_col2:
+        backup_data = export_backup(db)
+        st.download_button(
+            "Zwischenspeicher vor Neustart herunterladen",
+            data=backup_data,
+            file_name="ortsmeisterschaft-zwischenspeicher-vor-neustart.json",
+            mime="application/json",
+        )
+        backup_confirmed = st.checkbox("Zwischenspeicher wurde heruntergeladen", key="reset_backup_confirmed")
+        reset_confirmed = st.checkbox("Ich moechte alle Meisterschaftsdaten loeschen", key="reset_confirmed")
+        if st.button(
+            "Neue Meisterschaft beginnen",
+            disabled=not (backup_confirmed and reset_confirmed),
+        ):
+            reset_championship(db)
+            st.success("Neue Meisterschaft wurde gestartet. Alle eingegebenen Daten wurden zurueckgesetzt.")
+            refresh()
 
 
 def page_anmeldung(db):
