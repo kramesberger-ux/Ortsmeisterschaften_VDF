@@ -874,7 +874,7 @@ def render_certificate_pdf_preview(row, settings):
     st.markdown(
         f"""
         <div style="
-            height: 15cm;
+            aspect-ratio: 1 / 1.414;
             overflow: auto;
             border: 1px solid #d7dce1;
             box-shadow: 0 8px 22px rgba(31, 41, 51, 0.12);
