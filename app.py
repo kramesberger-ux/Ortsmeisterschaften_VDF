@@ -296,6 +296,15 @@ def participant_rows(participants):
     ]
 
 
+def global_run_numbers(bewerbe):
+    runs = [
+        lauf
+        for bewerb in sorted(bewerbe, key=lambda item: item.id)
+        for lauf in sorted(bewerb.laufe, key=lambda item: (item.laufnummer, item.id))
+    ]
+    return {lauf.id: number for number, lauf in enumerate(runs, start=1)}
+
+
 def build_results(db):
     results = []
     bewerbe = (
@@ -689,6 +698,7 @@ def build_startlist_pdf(bewerbe):
         Paragraph("Startliste", styles["StartlistTitle"]),
         Paragraph(f"Stand {datetime.now().strftime('%d.%m.%Y %H:%M')}", styles["StartlistMeta"]),
     ]
+    run_numbers = global_run_numbers(bewerbe)
 
     for bewerb in bewerbe:
         story.append(Paragraph(f"Bewerb ID {bewerb.id}: {bewerb.full_name()}", styles["StartlistCompetition"]))
@@ -702,7 +712,7 @@ def build_startlist_pdf(bewerbe):
                 name = "-"
                 if bahn.teilnehmer:
                     name = bahn.teilnehmer.staffel if is_relay else bahn.teilnehmer.display_name()
-                rows.append([str(lauf.laufnummer), str(bahn.bahn), name or "-"])
+                rows.append([str(run_numbers[lauf.id]), str(bahn.bahn), name or "-"])
 
         table = Table(rows, colWidths=[18 * mm, 18 * mm, 125 * mm], repeatRows=1)
         table.setStyle(
@@ -839,6 +849,7 @@ def build_full_report_pdf(db):
 
     story.append(Paragraph("Startlisten", styles["ReportSection"]))
     start_rows = [["Bewerb", "Lauf", "Bahn", "Teilnehmer/Staffel"]]
+    run_numbers = global_run_numbers(bewerbe)
     for b in bewerbe:
         is_relay = is_staffel_bewerb(b)
         for lauf in sorted(b.laufe, key=lambda item: item.laufnummer):
@@ -846,7 +857,7 @@ def build_full_report_pdf(db):
                 name = "-"
                 if bahn.teilnehmer:
                     name = bahn.teilnehmer.staffel if is_relay else bahn.teilnehmer.display_name()
-                start_rows.append([f"ID {b.id}", str(lauf.laufnummer), str(bahn.bahn), name or "-"])
+                start_rows.append([f"ID {b.id}", str(run_numbers[lauf.id]), str(bahn.bahn), name or "-"])
     add_table(story, start_rows, [20 * mm, 14 * mm, 14 * mm, 110 * mm])
 
     story.append(Paragraph("Ergebnisse", styles["ReportSection"]))
@@ -1563,7 +1574,7 @@ def page_settings(db):
         st.info("Keine Bewerbe vorhanden.")
 
 
-def render_startlist_competitions(db, bewerbe, empty_message):
+def render_startlist_competitions(db, bewerbe, empty_message, run_numbers):
     if not bewerbe:
         st.info(empty_message)
         return
@@ -1605,7 +1616,7 @@ def render_startlist_competitions(db, bewerbe, empty_message):
                 continue
 
             for lauf in sorted(bewerb.laufe, key=lambda item: item.laufnummer):
-                st.markdown(f"**Lauf {lauf.laufnummer}**")
+                st.markdown(f"**Lauf {run_numbers[lauf.id]}**")
                 st.dataframe(
                     pd.DataFrame(
                         [
@@ -1670,20 +1681,21 @@ def page_startliste(db):
 
     einzel_bewerbe = [bewerb for bewerb in bewerbe if not is_staffel_bewerb(bewerb)]
     staffel_bewerbe = [bewerb for bewerb in bewerbe if is_staffel_bewerb(bewerb)]
+    run_numbers = global_run_numbers(bewerbe)
 
     einzel_tab, staffel_tab = st.tabs(["Einzelbewerbe", "Staffel"])
     with einzel_tab:
-        render_startlist_competitions(db, einzel_bewerbe, "Keine Einzelbewerbe vorhanden.")
+        render_startlist_competitions(db, einzel_bewerbe, "Keine Einzelbewerbe vorhanden.", run_numbers)
     with staffel_tab:
-        render_startlist_competitions(db, staffel_bewerbe, "Keine Staffelbewerbe vorhanden.")
+        render_startlist_competitions(db, staffel_bewerbe, "Keine Staffelbewerbe vorhanden.", run_numbers)
 
 
-def render_timekeeping_runs(laufe, empty_message):
+def render_timekeeping_runs(laufe, empty_message, run_numbers):
     if not laufe:
         st.info(empty_message)
         return
     for lauf in laufe:
-        st.subheader(f"Bewerb ID {lauf.bewerb.id}: {lauf.bewerb.full_name()} - Lauf {lauf.laufnummer}")
+        st.subheader(f"Bewerb ID {lauf.bewerb.id}: {lauf.bewerb.full_name()} - Lauf {run_numbers[lauf.id]}")
 
         for bahn in sorted(lauf.laufbahnen, key=lambda item: item.bahn):
             lane_col, name_col, time_col = st.columns([1, 3, 2])
@@ -1729,12 +1741,23 @@ def page_zeitnehmung(db):
 
     staffel_laufe = [lauf for lauf in laufe if is_staffel_bewerb(lauf.bewerb)]
     einzel_laufe = [lauf for lauf in laufe if not is_staffel_bewerb(lauf.bewerb)]
+    run_numbers = {
+        lauf.id: number
+        for number, lauf in enumerate(
+            sorted(laufe, key=lambda item: (item.bewerb_id, item.laufnummer, item.id)),
+            start=1,
+        )
+    }
 
     einzel_tab, staffel_tab = st.tabs(["Einzelbewerbe", "Staffel"])
     with einzel_tab:
-        render_timekeeping_runs(einzel_laufe, "Keine Einzel-Laeufe vorhanden.")
+        render_timekeeping_runs(einzel_laufe, "Keine Einzel-Laeufe vorhanden.", run_numbers)
     with staffel_tab:
-        render_timekeeping_runs(staffel_laufe, "Keine Staffel-Laeufe vorhanden. Lege Staffeln bei den Teilnehmenden an.")
+        render_timekeeping_runs(
+            staffel_laufe,
+            "Keine Staffel-Laeufe vorhanden. Lege Staffeln bei den Teilnehmenden an.",
+            run_numbers,
+        )
 
 
 def page_ergebnisse(db):
