@@ -19,6 +19,7 @@ from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy.orm import joinedload
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from models import (
     Anmeldung,
@@ -71,6 +72,10 @@ def init_database():
         teilnehmer_column_names = {column[1] for column in teilnehmer_columns}
         if "gast" not in teilnehmer_column_names:
             connection.execute(text("ALTER TABLE teilnehmer ADD COLUMN gast BOOLEAN DEFAULT 0"))
+        laufbahn_columns = connection.execute(text("PRAGMA table_info(laufbahn)")).fetchall()
+        laufbahn_column_names = {column[1] for column in laufbahn_columns}
+        if laufbahn_columns and "zeit_ms" not in laufbahn_column_names:
+            connection.execute(text("ALTER TABLE laufbahn ADD COLUMN zeit_ms INTEGER DEFAULT 0"))
         altersklasse_columns = connection.execute(text("PRAGMA table_info(altersklasse)")).fetchall()
         altersklasse_column_names = {column[1] for column in altersklasse_columns}
         if altersklasse_columns and "distanz" not in altersklasse_column_names:
@@ -415,13 +420,17 @@ def get_or_create_relay_jahrgang(db):
 
 
 def delete_participant(participant, db):
-    db.query(LaufBahn).filter_by(teilnehmer_id=participant.id).update(
-        {LaufBahn.teilnehmer_id: None, LaufBahn.zeit_ms: 0},
-        synchronize_session=False,
-    )
-    db.query(Anmeldung).filter_by(teilnehmer_id=participant.id).delete(synchronize_session=False)
-    db.delete(participant)
-    db.commit()
+    try:
+        lanes = db.query(LaufBahn).filter(LaufBahn.teilnehmer_id == participant.id).all()
+        for lane in lanes:
+            lane.teilnehmer_id = None
+            lane.zeit_ms = 0
+        db.query(Anmeldung).filter_by(teilnehmer_id=participant.id).delete(synchronize_session=False)
+        db.delete(participant)
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise RuntimeError(f"Teilnehmer konnte nicht geloescht werden: {exc}") from exc
 
 
 def participant_rows(participants):
@@ -1621,9 +1630,12 @@ def page_anmeldung(db):
                 refresh()
 
             if delete_selected:
-                delete_participant(selected_participant, db)
-                st.success("Teilnehmer wurde geloescht.")
-                refresh()
+                try:
+                    delete_participant(selected_participant, db)
+                    st.success("Teilnehmer wurde geloescht.")
+                    refresh()
+                except RuntimeError as exc:
+                    st.error(str(exc))
 
     rows = participant_rows(participants)
     if rows:
@@ -1648,7 +1660,10 @@ def page_anmeldung(db):
                 if not participant:
                     continue
                 if row.get("Loeschen"):
-                    delete_participant(participant, db)
+                    try:
+                        delete_participant(participant, db)
+                    except RuntimeError as exc:
+                        st.error(str(exc))
                     continue
                 if str(row["Vorname"]).strip() and str(row["Nachname"]).strip():
                     participant.vorname = str(row["Vorname"]).strip()
