@@ -234,6 +234,15 @@ def format_time_input(ms):
     return f"{minutes:02d}:{seconds:02d}:{hundredths:02d}"
 
 
+def decode_uploaded_text(data):
+    for encoding in ["utf-8-sig", "utf-8", "cp1252", "latin-1"]:
+        try:
+            return data.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace"), "utf-8 mit Ersatzzeichen"
+
+
 def normalize_time_input(key):
     ms = parse_time_to_ms(st.session_state.get(key, ""))
     st.session_state[key] = format_time_input(ms)
@@ -248,6 +257,7 @@ def center_certificate_field(prefix, axis):
 
 CERTIFICATE_TEMPLATE_KEY = "certificate_template"
 ALTERSKLASSEN_STANDARD_KEY = "altersklassen_standard"
+SETTINGS_STANDARD_KEY = "settings_standard"
 
 
 def certificate_field_defaults():
@@ -329,6 +339,102 @@ def apply_pending_certificate_template(defaults):
         apply_certificate_template_to_session(pending_template, defaults)
 
 
+def serialize_settings_standard(db):
+    jahrgaenge = db.query(Jahrgang).order_by(Jahrgang.id).all()
+    jahrgang_keys = {jahrgang.id: f"jahrgang_{jahrgang.id}" for jahrgang in jahrgaenge}
+    return {
+        "jahrgaenge": [
+            {
+                "key": jahrgang_keys[jahrgang.id],
+                "name": jahrgang.name,
+                "jahr_von": jahrgang.jahr_von,
+                "jahr_bis": jahrgang.jahr_bis,
+            }
+            for jahrgang in jahrgaenge
+        ],
+        "bewerbe": [
+            {
+                "name": bewerb.name,
+                "stil": bewerb.stil,
+                "geschlecht": bewerb.geschlecht,
+                "distanz": bewerb.distanz,
+                "ortsmeister_relevant": bool(bewerb.ortsmeister_relevant),
+                "ortsmeister_maennlich": bool(bewerb.ortsmeister_maennlich),
+                "ortsmeister_weiblich": bool(bewerb.ortsmeister_weiblich),
+                "jahrgang_key": jahrgang_keys.get(bewerb.jahrgang_id),
+            }
+            for bewerb in db.query(Bewerb).order_by(Bewerb.id).all()
+        ],
+    }
+
+
+def load_settings_standard(db):
+    meta = db.query(AppMeta).get(SETTINGS_STANDARD_KEY)
+    if not meta:
+        return {}
+    try:
+        return json.loads(meta.value)
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_settings_standard(db):
+    value = json.dumps(serialize_settings_standard(db), ensure_ascii=False)
+    meta = db.query(AppMeta).get(SETTINGS_STANDARD_KEY)
+    if meta:
+        meta.value = value
+    else:
+        db.add(AppMeta(key=SETTINGS_STANDARD_KEY, value=value))
+    db.commit()
+
+
+def restore_settings_standard(db, standard):
+    if not standard:
+        return False
+    for model in [LaufBahn, Lauf, Anmeldung, Bewerb, Jahrgang]:
+        db.query(model).delete(synchronize_session=False)
+    db.flush()
+
+    jahrgang_ids = {}
+    for item in standard.get("jahrgaenge", []):
+        jahrgang = Jahrgang(
+            name=str(item.get("name", "")).strip(),
+            jahr_von=int(item.get("jahr_von", 0)),
+            jahr_bis=int(item.get("jahr_bis", 0)),
+        )
+        if not jahrgang.name or jahrgang.jahr_von > jahrgang.jahr_bis:
+            continue
+        db.add(jahrgang)
+        db.flush()
+        jahrgang_ids[item.get("key")] = jahrgang.id
+
+    for item in standard.get("bewerbe", []):
+        jahrgang_id = jahrgang_ids.get(item.get("jahrgang_key"))
+        if not jahrgang_id:
+            continue
+        name = str(item.get("name", "")).strip()
+        distanz = str(item.get("distanz", "")).strip()
+        stil = str(item.get("stil", "")).strip()
+        geschlecht = str(item.get("geschlecht", "")).strip()
+        if not (name and distanz and stil and geschlecht):
+            continue
+        db.add(
+            Bewerb(
+                name=name,
+                stil=stil,
+                geschlecht=geschlecht,
+                distanz=distanz,
+                ortsmeister_relevant=bool(item.get("ortsmeister_relevant", False)),
+                ortsmeister_maennlich=bool(item.get("ortsmeister_maennlich", item.get("ortsmeister_relevant", False))),
+                ortsmeister_weiblich=bool(item.get("ortsmeister_weiblich", item.get("ortsmeister_relevant", False))),
+                jahrgang_id=jahrgang_id,
+            )
+        )
+    db.commit()
+    update_assignments_for_all_participants(db)
+    return True
+
+
 def save_lane_time(lane_id, key):
     ms = parse_time_to_ms(st.session_state.get(key, ""))
     st.session_state[key] = format_time_input(ms)
@@ -376,6 +482,7 @@ def export_backup(db):
         ],
         "certificate_template": load_certificate_template(db),
         "altersklassen_standard": load_altersklassen_standard(db),
+        "settings_standard": load_settings_standard(db),
         "bewerbe": [
             {
                 "id": item.id,
@@ -467,6 +574,14 @@ def restore_backup(db, data):
         save_certificate_template(db, data["certificate_template"])
     if data.get("altersklassen_standard"):
         save_altersklassen_standard(db, data["altersklassen_standard"])
+    if data.get("settings_standard"):
+        meta = db.query(AppMeta).get(SETTINGS_STANDARD_KEY)
+        value = json.dumps(data["settings_standard"], ensure_ascii=False)
+        if meta:
+            meta.value = value
+        else:
+            db.add(AppMeta(key=SETTINGS_STANDARD_KEY, value=value))
+        db.commit()
     if not data.get("altersklassen"):
         create_default_altersklassen()
 
@@ -1600,13 +1715,13 @@ def page_anmeldung(db):
         template = "Vorname;Nachname;Geburtsjahr;Geschlecht;Brust;Freistil;Staffel;Gast\r\nMax;Mustermann;2012;m;ja;nein;Team A;nein\r\nErika;Musterfrau;2011;w;nein;ja;Team A;ja\r\n"
         st.download_button(
             "CSV Vorlage herunterladen",
-            data=template.encode("utf-8"),
+            data=template.encode("utf-8-sig"),
             file_name="anmeldung-vorlage.csv",
             mime="text/csv",
         )
         uploaded_file = st.file_uploader("CSV-Datei", type=["csv", "txt"])
         if st.button("Import starten", disabled=uploaded_file is None):
-            text = uploaded_file.getvalue().decode("utf-8", errors="replace")
+            text, encoding = decode_uploaded_text(uploaded_file.getvalue())
             rows = csv.reader(StringIO(text), delimiter=";")
             next(rows, None)
             imported = 0
@@ -1632,7 +1747,7 @@ def page_anmeldung(db):
                 db.flush()
                 assign_bewerbe_for_teilnehmer(participant, db)
                 imported += 1
-            st.success(f"{imported} Teilnehmende aus CSV importiert.")
+            st.success(f"{imported} Teilnehmende aus CSV importiert. Encoding: {encoding}")
             refresh()
 
     st.subheader("Teilnehmer")
@@ -1769,6 +1884,23 @@ def page_anmeldung(db):
 
 def page_settings(db):
     st.title("Einstellungen")
+    st.subheader("Standardvorlage")
+    template_col1, template_col2, template_col3 = st.columns([1, 1, 2])
+    if template_col1.button("Aktuelle Einstellungen als Standard", type="primary"):
+        save_settings_standard(db)
+        st.success("Aktuelle Jahrgaenge und Bewerbe wurden als Standardvorlage gespeichert.")
+    restore_confirmed = template_col3.checkbox(
+        "Bewerbe, Jahrgaenge, Startlisten und Zeiten durch Standardvorlage ersetzen",
+        key="restore_settings_standard_confirmed",
+    )
+    if template_col2.button("Standardvorlage wiederherstellen", disabled=not restore_confirmed):
+        if restore_settings_standard(db, load_settings_standard(db)):
+            st.success("Standardvorlage wurde wiederhergestellt.")
+            st.warning("Teilnehmer-Zuordnungen wurden aktualisiert. Bitte Startlisten neu erzeugen.")
+            refresh()
+        else:
+            st.info("Noch keine Standardvorlage fuer Einstellungen gespeichert.")
+
     jahrgang_col, bewerb_col = st.columns([1, 1])
 
     with jahrgang_col:
