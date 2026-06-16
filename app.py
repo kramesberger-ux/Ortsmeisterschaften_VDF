@@ -587,9 +587,12 @@ def restore_backup(db, data):
 
 
 def reset_championship(db):
+    settings_standard = load_settings_standard(db)
     for model in [LaufBahn, Lauf, Anmeldung, Teilnehmer, Bewerb, Jahrgang, Altersklasse]:
         db.query(model).delete(synchronize_session=False)
     db.commit()
+    if settings_standard:
+        restore_settings_standard(db, settings_standard)
     create_default_altersklassen()
 
 
@@ -1664,7 +1667,7 @@ def page_home(db):
         ):
             reset_championship(db)
             clear_reset_checkboxes()
-            st.success("Neue Meisterschaft wurde gestartet. Alle eingegebenen Daten wurden zurueckgesetzt.")
+            st.success("Neue Meisterschaft wurde gestartet. Standard-Einstellungen und Altersklassen wurden beibehalten.")
             refresh()
 
 
