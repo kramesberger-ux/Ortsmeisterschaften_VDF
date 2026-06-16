@@ -480,37 +480,59 @@ def altersklasse_label(altersklasse):
     return f"{altersklasse.name}{distanz} ({altersklasse.display_range()})"
 
 
+def result_gender_label(gender):
+    labels = {
+        "maennlich": "Maennlich",
+        "weiblich": "Weiblich",
+        "mixed": "Mixed",
+    }
+    return labels.get(gender, "Ohne Geschlecht")
+
+
+def result_gender_sort(gender):
+    order = {"maennlich": 1, "weiblich": 2, "mixed": 3}
+    return order.get(gender, 9)
+
+
 def result_group_label(bewerb, group):
     if is_staffel_bewerb(bewerb):
         return "Staffel"
-    return altersklasse_label(group["altersklasse"])
+    return f"{altersklasse_label(group['altersklasse'])} - {result_gender_label(group.get('gender'))}"
 
 
 def group_results_by_altersklasse(lane_results, altersklassen):
     grouped = []
-    groups_by_id = {}
-    fallback = {"altersklasse": None, "results": [], "sortierung": 9999}
+    groups_by_key = {}
 
     for item in lane_results:
         teilnehmer = item["teilnehmer"]
         altersklasse = altersklasse_for_birth_year(altersklassen, teilnehmer.geburtsjahr)
+        gender = normalized_gender(teilnehmer.geschlecht)
         item["altersklasse"] = altersklasse
-        if altersklasse:
-            group = groups_by_id.setdefault(
-                altersklasse.id,
-                {"altersklasse": altersklasse, "results": [], "sortierung": altersklasse.sortierung or 0},
-            )
-        else:
-            group = fallback
+        item["result_gender"] = gender
+        key = (altersklasse.id if altersklasse else None, gender)
+        group = groups_by_key.setdefault(
+            key,
+            {
+                "altersklasse": altersklasse,
+                "gender": gender,
+                "results": [],
+                "sortierung": altersklasse.sortierung if altersklasse else 9999,
+            },
+        )
         group["results"].append(item)
 
-    for group in groups_by_id.values():
+    for group in groups_by_key.values():
         group["results"].sort(key=lambda item: (item["zeit_ms"], item["teilnehmer"].id))
         grouped.append(group)
-    if fallback["results"]:
-        fallback["results"].sort(key=lambda item: (item["zeit_ms"], item["teilnehmer"].id))
-        grouped.append(fallback)
-    grouped.sort(key=lambda group: (group["sortierung"], altersklasse_label(group["altersklasse"])))
+    grouped.sort(
+        key=lambda group: (
+            group["sortierung"],
+            altersklasse_label(group["altersklasse"]),
+            result_gender_sort(group.get("gender")),
+            result_gender_label(group.get("gender")),
+        )
+    )
     return grouped
 
 
