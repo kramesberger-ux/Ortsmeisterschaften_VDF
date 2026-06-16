@@ -1225,7 +1225,7 @@ def build_certificates_pdf(rows, settings):
         if settings.get("place_visible", True):
             draw_centered_certificate_text(
                 pdf,
-                f"{row['place']}. Platz",
+                str(row["place"]),
                 settings["place_x"],
                 settings["place_y"],
                 "Helvetica-Bold",
