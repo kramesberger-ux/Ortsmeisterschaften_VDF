@@ -76,6 +76,12 @@ def init_database():
         laufbahn_column_names = {column[1] for column in laufbahn_columns}
         if laufbahn_columns and "zeit_ms" not in laufbahn_column_names:
             connection.execute(text("ALTER TABLE laufbahn ADD COLUMN zeit_ms INTEGER DEFAULT 0"))
+        anmeldung_columns = connection.execute(text("PRAGMA table_info(anmeldung)")).fetchall()
+        anmeldung_column_names = {column[1] for column in anmeldung_columns}
+        if anmeldung_columns and "teilnehmer_id" not in anmeldung_column_names:
+            connection.execute(text("ALTER TABLE anmeldung ADD COLUMN teilnehmer_id INTEGER"))
+        if anmeldung_columns and "bewerb_id" not in anmeldung_column_names:
+            connection.execute(text("ALTER TABLE anmeldung ADD COLUMN bewerb_id INTEGER"))
         altersklasse_columns = connection.execute(text("PRAGMA table_info(altersklasse)")).fetchall()
         altersklasse_column_names = {column[1] for column in altersklasse_columns}
         if altersklasse_columns and "distanz" not in altersklasse_column_names:
@@ -1489,14 +1495,36 @@ def ortsmeister_certificate_rows(db):
         ("Ortsmeister Weiblich", "weiblich", female_bewerbe),
     ]:
         results = build_ortsmeister_results(db, [bewerb.id for bewerb in selected_bewerbe], gender)
-        for place, item in enumerate(results, start=1):
+        if results:
+            item = results[0]
             rows.append(
                 {
-                    "place": place,
+                    "place": 1,
                     "name": item["teilnehmer"].display_name(),
                     "competition": label,
                     "age_class": "",
                     "time": format_ms(item["gesamt_ms"]),
+                    "copy": 1,
+                }
+            )
+    return rows
+
+
+def day_fastest_certificate_rows(db):
+    groups = build_day_fastest_results(db)
+    rows = []
+    for distance, gender_groups in groups.items():
+        for gender, result_rows in gender_groups.items():
+            if not result_rows:
+                continue
+            winner = result_rows[0]
+            rows.append(
+                {
+                    "place": 1,
+                    "name": winner["teilnehmer"].display_name(),
+                    "competition": "Tagesschnellste",
+                    "age_class": f"{distance} - {result_gender_label(gender)}",
+                    "time": format_ms(winner["zeit_ms"]),
                     "copy": 1,
                 }
             )
@@ -2712,13 +2740,20 @@ def page_urkunden(db):
                 f"{bewerb_data['bewerb'].full_name()} - {result_group_label(bewerb_data['bewerb'], group)}"
             )
             altersklasse_options[label] = {"bewerb": bewerb_data["bewerb"], "group": group}
-    certificate_options = ["Alle", "Ortsmeister", "Staffel"] + list(bewerb_options.keys()) + list(altersklasse_options.keys())
+    certificate_options = ["Alle", "Ortsmeister", "Tagesschnellste", "Staffel"] + list(bewerb_options.keys()) + list(altersklasse_options.keys())
     scope = selection_col.selectbox("Urkunden fuer", certificate_options)
     date_col.text_input("Datum/Ort", key="certificate_date_text")
     if scope == "Alle":
-        rows = certificate_rows(results, None) + ortsmeister_certificate_rows(db) + relay_certificate_rows(db)
+        rows = (
+            certificate_rows(results, None)
+            + ortsmeister_certificate_rows(db)
+            + day_fastest_certificate_rows(db)
+            + relay_certificate_rows(db)
+        )
     elif scope == "Ortsmeister":
         rows = ortsmeister_certificate_rows(db)
+    elif scope == "Tagesschnellste":
+        rows = day_fastest_certificate_rows(db)
     elif scope == "Staffel":
         rows = relay_certificate_rows(db)
     elif scope in altersklasse_options:
