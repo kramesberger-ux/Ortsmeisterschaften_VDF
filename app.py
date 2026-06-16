@@ -236,6 +236,12 @@ def apply_certificate_template_to_session(template, defaults):
     )
 
 
+def apply_pending_certificate_template(defaults):
+    pending_template = st.session_state.pop("pending_certificate_template", None)
+    if pending_template is not None:
+        apply_certificate_template_to_session(pending_template, defaults)
+
+
 def save_lane_time(lane_id, key):
     ms = parse_time_to_ms(st.session_state.get(key, ""))
     st.session_state[key] = format_time_input(ms)
@@ -2387,6 +2393,7 @@ def page_urkunden(db):
     results = build_results(db)
     defaults = certificate_field_defaults()
     initialize_certificate_template_state(db, defaults)
+    apply_pending_certificate_template(defaults)
     selection_col, date_col = st.columns([1, 1])
     bewerb_options = {
         f"Bewerb ID {bewerb_data['bewerb'].id}: {bewerb_data['bewerb'].full_name()}": bewerb_data
@@ -2485,13 +2492,13 @@ def page_urkunden(db):
         if template_cols[1].button("Vorlage laden"):
             template = load_certificate_template(db)
             if template:
-                apply_certificate_template_to_session(template, defaults)
+                st.session_state["pending_certificate_template"] = template
                 st.success("Urkundenvorlage wurde geladen.")
                 refresh()
             else:
                 st.info("Noch keine gespeicherte Vorlage vorhanden.")
         if template_cols[2].button("Standardwerte"):
-            apply_certificate_template_to_session({}, defaults)
+            st.session_state["pending_certificate_template"] = {}
             st.success("Standardwerte wurden geladen.")
             refresh()
 
