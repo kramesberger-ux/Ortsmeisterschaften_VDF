@@ -94,36 +94,117 @@ def create_default_altersklassen():
     db = get_db()
     try:
         if db.query(Altersklasse).first():
+            remove_duplicate_altersklassen(db)
             return
-        defaults = [
-            ("Kinder", "25", 2018, 2100),
-            ("Kinder", "25", 2017, 2017),
-            ("Kinder", "25", 2016, 2016),
-            ("Jugend", "50", 2015, 2015),
-            ("Jugend", "50", 2014, 2014),
-            ("Jugend", "50", 2013, 2013),
-            ("Jugend", "50", 2012, 2012),
-            ("Jugend", "50", 2011, 2011),
-            ("Allgemeine Klasse", "100", 2001, 2010),
-            ("Altersklasse I", "", 1991, 2000),
-            ("Altersklasse II", "", 1981, 1990),
-            ("Altersklasse III", "", 1971, 1980),
-            ("Altersklasse IV", "", 1951, 1970),
-            ("Altersklasse V", "", 0, 1950),
-        ]
-        for index, (name, distanz, jahr_von, jahr_bis) in enumerate(defaults, start=1):
-            db.add(
-                Altersklasse(
-                    name=name,
-                    distanz=distanz,
-                    jahr_von=jahr_von,
-                    jahr_bis=jahr_bis,
-                    sortierung=index,
-                )
-            )
+        create_altersklassen_from_rows(db, load_altersklassen_standard(db))
         db.commit()
     finally:
         db.close()
+
+
+def hardcoded_altersklassen_standard():
+    return [
+        {"name": "Kinder", "distanz": "25", "jahr_von": 2018, "jahr_bis": 2100, "sortierung": 1},
+        {"name": "Kinder", "distanz": "25", "jahr_von": 2017, "jahr_bis": 2017, "sortierung": 2},
+        {"name": "Kinder", "distanz": "25", "jahr_von": 2016, "jahr_bis": 2016, "sortierung": 3},
+        {"name": "Jugend", "distanz": "50", "jahr_von": 2015, "jahr_bis": 2015, "sortierung": 4},
+        {"name": "Jugend", "distanz": "50", "jahr_von": 2014, "jahr_bis": 2014, "sortierung": 5},
+        {"name": "Jugend", "distanz": "50", "jahr_von": 2013, "jahr_bis": 2013, "sortierung": 6},
+        {"name": "Jugend", "distanz": "50", "jahr_von": 2012, "jahr_bis": 2012, "sortierung": 7},
+        {"name": "Jugend", "distanz": "50", "jahr_von": 2011, "jahr_bis": 2011, "sortierung": 8},
+        {"name": "Allgemeine Klasse", "distanz": "100", "jahr_von": 2001, "jahr_bis": 2010, "sortierung": 9},
+        {"name": "Altersklasse I", "distanz": "", "jahr_von": 1991, "jahr_bis": 2000, "sortierung": 10},
+        {"name": "Altersklasse II", "distanz": "", "jahr_von": 1981, "jahr_bis": 1990, "sortierung": 11},
+        {"name": "Altersklasse III", "distanz": "", "jahr_von": 1971, "jahr_bis": 1980, "sortierung": 12},
+        {"name": "Altersklasse IV", "distanz": "", "jahr_von": 1951, "jahr_bis": 1970, "sortierung": 13},
+        {"name": "Altersklasse V", "distanz": "", "jahr_von": 0, "jahr_bis": 1950, "sortierung": 14},
+    ]
+
+
+def load_altersklassen_standard(db):
+    meta = db.query(AppMeta).get(ALTERSKLASSEN_STANDARD_KEY)
+    if not meta:
+        return hardcoded_altersklassen_standard()
+    try:
+        rows = json.loads(meta.value)
+    except json.JSONDecodeError:
+        return hardcoded_altersklassen_standard()
+    return rows or hardcoded_altersklassen_standard()
+
+
+def save_altersklassen_standard(db, rows):
+    value = json.dumps(rows, ensure_ascii=False)
+    meta = db.query(AppMeta).get(ALTERSKLASSEN_STANDARD_KEY)
+    if meta:
+        meta.value = value
+    else:
+        db.add(AppMeta(key=ALTERSKLASSEN_STANDARD_KEY, value=value))
+    db.commit()
+
+
+def serialize_altersklassen(altersklassen):
+    return [
+        {
+            "name": item.name,
+            "distanz": normalize_distance_number(item.distanz),
+            "jahr_von": int(item.jahr_von),
+            "jahr_bis": int(item.jahr_bis),
+            "sortierung": int(item.sortierung or index),
+        }
+        for index, item in enumerate(altersklassen, start=1)
+    ]
+
+
+def serialize_altersklassen_from_session(altersklassen):
+    rows = []
+    for index, item in enumerate(altersklassen, start=1):
+        name = st.session_state.get(f"ak_name_{item.id}", item.name).strip()
+        jahr_von = int(st.session_state.get(f"ak_von_{item.id}", item.jahr_von))
+        jahr_bis = int(st.session_state.get(f"ak_bis_{item.id}", item.jahr_bis))
+        rows.append(
+            {
+                "name": name,
+                "distanz": normalize_distance_number(st.session_state.get(f"ak_distanz_{item.id}", item.distanz)),
+                "jahr_von": jahr_von,
+                "jahr_bis": jahr_bis,
+                "sortierung": int(st.session_state.get(f"ak_sortierung_{item.id}", item.sortierung or index)),
+            }
+        )
+    return rows
+
+
+def create_altersklassen_from_rows(db, rows):
+    for index, item in enumerate(rows, start=1):
+        db.add(
+            Altersklasse(
+                name=str(item.get("name", "")).strip(),
+                distanz=normalize_distance_number(item.get("distanz", "")),
+                jahr_von=int(item.get("jahr_von", 0)),
+                jahr_bis=int(item.get("jahr_bis", 0)),
+                sortierung=int(item.get("sortierung", index) or index),
+            )
+        )
+
+
+def remove_duplicate_altersklassen(db):
+    seen = set()
+    removed = 0
+    altersklassen = db.query(Altersklasse).order_by(Altersklasse.sortierung, Altersklasse.id).all()
+    for item in altersklassen:
+        key = (
+            item.name.strip().lower(),
+            normalize_distance_number(item.distanz),
+            int(item.jahr_von),
+            int(item.jahr_bis),
+        )
+        if key in seen:
+            db.delete(item)
+            removed += 1
+        else:
+            seen.add(key)
+    if removed:
+        db.commit()
+    return removed
 
 
 def refresh():
@@ -166,6 +247,7 @@ def center_certificate_field(prefix, axis):
 
 
 CERTIFICATE_TEMPLATE_KEY = "certificate_template"
+ALTERSKLASSEN_STANDARD_KEY = "altersklassen_standard"
 
 
 def certificate_field_defaults():
@@ -293,6 +375,7 @@ def export_backup(db):
             for item in db.query(Altersklasse).order_by(Altersklasse.sortierung, Altersklasse.id).all()
         ],
         "certificate_template": load_certificate_template(db),
+        "altersklassen_standard": load_altersklassen_standard(db),
         "bewerbe": [
             {
                 "id": item.id,
@@ -382,6 +465,8 @@ def restore_backup(db, data):
     db.commit()
     if data.get("certificate_template"):
         save_certificate_template(db, data["certificate_template"])
+    if data.get("altersklassen_standard"):
+        save_altersklassen_standard(db, data["altersklassen_standard"])
     if not data.get("altersklassen"):
         create_default_altersklassen()
 
@@ -1948,6 +2033,10 @@ def page_altersklassen(db):
             st.error("Bitte gueltige Angaben fuer die Altersklasse eintragen.")
 
     st.subheader("Klasseneinteilung")
+    removed_duplicates = remove_duplicate_altersklassen(db)
+    if removed_duplicates:
+        st.info(f"{removed_duplicates} doppelte Altersklasse(n) wurden bereinigt.")
+        refresh()
     altersklassen = db.query(Altersklasse).order_by(Altersklasse.sortierung, Altersklasse.id).all()
     if not altersklassen:
         st.info("Keine Altersklassen vorhanden.")
@@ -2017,7 +2106,7 @@ def page_altersklassen(db):
             st.success("Altersklasse wurde geloescht.")
             refresh()
 
-    save_col, reset_col = st.columns([1, 1])
+    save_col, standard_col, reset_col = st.columns([1, 1, 1])
     if save_col.button("Altersklassen speichern", type="primary"):
         valid = True
         for item in altersklassen:
@@ -2037,16 +2126,28 @@ def page_altersklassen(db):
             altersklasse.sortierung = int(st.session_state.get(f"ak_sortierung_{item.id}", item.sortierung or 0))
         if valid:
             db.commit()
-            st.success("Altersklassen wurden gespeichert.")
+            saved_altersklassen = db.query(Altersklasse).order_by(Altersklasse.sortierung, Altersklasse.id).all()
+            save_altersklassen_standard(db, serialize_altersklassen(saved_altersklassen))
+            st.success("Altersklassen wurden gespeichert und als Standard gesetzt.")
             refresh()
         else:
             db.rollback()
             st.error("Bitte pruefe Name und Jahrgangsbereich der Altersklassen.")
 
+    if standard_col.button("Aktuelle als Standard"):
+        standard_rows = serialize_altersklassen_from_session(altersklassen)
+        if all(row["name"] and row["jahr_von"] <= row["jahr_bis"] for row in standard_rows):
+            save_altersklassen_standard(db, standard_rows)
+            st.success("Aktuelle Klasseneinteilung wurde als Standard gespeichert.")
+            refresh()
+        else:
+            st.error("Bitte pruefe Name und Jahrgangsbereich der Altersklassen.")
+
     if reset_col.button("Standard-Klasseneinteilung wiederherstellen"):
         db.query(Altersklasse).delete(synchronize_session=False)
         db.commit()
-        create_default_altersklassen()
+        create_altersklassen_from_rows(db, load_altersklassen_standard(db))
+        db.commit()
         st.success("Standard-Klasseneinteilung wurde wiederhergestellt.")
         refresh()
 
