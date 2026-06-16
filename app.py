@@ -601,9 +601,14 @@ def clear_reset_checkboxes():
 
 
 def update_assignments_for_participant(participant, db):
-    db.query(Anmeldung).filter_by(teilnehmer_id=participant.id).delete(synchronize_session=False)
-    db.flush()
-    assign_bewerbe_for_teilnehmer(participant, db)
+    try:
+        for anmeldung in db.query(Anmeldung).filter(Anmeldung.teilnehmer_id == participant.id).all():
+            db.delete(anmeldung)
+        db.flush()
+        assign_bewerbe_for_teilnehmer(participant, db)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise RuntimeError(f"Zuordnung konnte nicht aktualisiert werden: {exc}") from exc
 
 
 def update_assignments_for_all_participants(db):
@@ -1170,6 +1175,18 @@ def build_startlist_pdf(bewerbe):
             spaceAfter=2 * mm,
         )
     )
+    styles.add(
+        ParagraphStyle(
+            name="StartlistRun",
+            parent=styles["Heading3"],
+            fontName="Helvetica-Bold",
+            fontSize=10,
+            leading=12,
+            textColor=colors.HexColor("#1f2933"),
+            spaceBefore=2 * mm,
+            spaceAfter=1 * mm,
+        )
+    )
     story = [
         Paragraph("Startliste", styles["StartlistTitle"]),
         Paragraph(f"Stand {datetime.now().strftime('%d.%m.%Y %H:%M')}", styles["StartlistMeta"]),
@@ -1182,33 +1199,34 @@ def build_startlist_pdf(bewerbe):
             story.append(Paragraph("Noch keine Laeufe erzeugt.", styles["Normal"]))
             continue
         is_relay = is_staffel_bewerb(bewerb)
-        rows = [["Lauf", "Bahn", "Staffel" if is_relay else "Teilnehmer"]]
         for lauf in sorted(bewerb.laufe, key=lambda item: item.laufnummer):
+            story.append(Paragraph(f"Lauf {run_numbers[lauf.id]}", styles["StartlistRun"]))
+            rows = [["Bahn", "Staffel" if is_relay else "Teilnehmer"]]
             for bahn in sorted(lauf.laufbahnen, key=lambda item: item.bahn):
                 name = "-"
                 if bahn.teilnehmer:
                     name = bahn.teilnehmer.staffel if is_relay else bahn.teilnehmer.display_name()
-                rows.append([str(run_numbers[lauf.id]), str(bahn.bahn), name or "-"])
+                rows.append([str(bahn.bahn), name or "-"])
 
-        table = Table(rows, colWidths=[18 * mm, 18 * mm, 125 * mm], repeatRows=1)
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2933")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("ALIGN", (0, 0), (1, -1), "CENTER"),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f8fa")]),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7dce1")),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                ]
+            table = Table(rows, colWidths=[24 * mm, 137 * mm], repeatRows=1)
+            table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2933")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 9),
+                        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f8fa")]),
+                        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7dce1")),
+                        ("TOPPADDING", (0, 0), (-1, -1), 6),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ]
+                )
             )
-        )
-        story.extend([table, Spacer(1, 4 * mm)])
+            story.extend([table, Spacer(1, 3 * mm)])
 
     doc.build(story, onFirstPage=draw_pdf_frame, onLaterPages=draw_pdf_frame)
     buffer.seek(0)
@@ -1821,16 +1839,22 @@ def page_anmeldung(db):
                     selected_participant.brust = new_brust
                     selected_participant.freistil = new_freistil
                     selected_participant.gast = new_gast
-                    update_assignments_for_participant(selected_participant, db)
-                    st.success("Teilnehmer und Zuordnung wurden aktualisiert.")
-                    refresh()
+                    try:
+                        update_assignments_for_participant(selected_participant, db)
+                        st.success("Teilnehmer und Zuordnung wurden aktualisiert.")
+                        refresh()
+                    except RuntimeError as exc:
+                        st.error(str(exc))
                 else:
                     st.error("Vorname und Nachname duerfen nicht leer sein.")
 
             if refresh_assignment:
-                update_assignments_for_participant(selected_participant, db)
-                st.success("Zuordnung wurde aktualisiert.")
-                refresh()
+                try:
+                    update_assignments_for_participant(selected_participant, db)
+                    st.success("Zuordnung wurde aktualisiert.")
+                    refresh()
+                except RuntimeError as exc:
+                    st.error(str(exc))
 
             if delete_selected:
                 try:
@@ -1878,7 +1902,10 @@ def page_anmeldung(db):
                     participant.gast = bool(row["Gast"])
                     staffel_value = "" if str(row["Staffel"]).strip() == "-" else str(row["Staffel"]).strip()
                     participant.staffel = staffel_value
-                    update_assignments_for_participant(participant, db)
+                    try:
+                        update_assignments_for_participant(participant, db)
+                    except RuntimeError as exc:
+                        st.error(str(exc))
             st.success("Teilnehmer-Tabelle wurde gespeichert.")
             refresh()
     else:
