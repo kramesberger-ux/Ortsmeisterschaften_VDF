@@ -2320,28 +2320,10 @@ def page_urkunden(db):
                 f"{bewerb_data['bewerb'].full_name()} - {result_group_label(bewerb_data['bewerb'], group)}"
             )
             altersklasse_options[label] = {"bewerb": bewerb_data["bewerb"], "group": group}
-    certificate_options = ["Manuell", "Alle", "Ortsmeister", "Staffel"] + list(bewerb_options.keys()) + list(altersklasse_options.keys())
+    certificate_options = ["Alle", "Ortsmeister", "Staffel"] + list(bewerb_options.keys()) + list(altersklasse_options.keys())
     scope = selection_col.selectbox("Urkunden fuer", certificate_options)
     date_text = date_col.text_input("Datum/Ort", value=f"Vorchdorf, {datetime.now().strftime('%d.%m.%Y')}")
-    if scope == "Manuell":
-        st.subheader("Manuelle Urkunde")
-        manual_col1, manual_col2 = st.columns(2)
-        manual_name = manual_col1.text_input("Name", key="manual_certificate_name")
-        manual_competition = manual_col2.text_input("Bewerb", key="manual_certificate_competition")
-        manual_age_class = manual_col1.text_input("Altersklasse", key="manual_certificate_age_class")
-        manual_time = manual_col2.text_input("Zeit", key="manual_certificate_time", placeholder="01:15.20")
-        manual_place = manual_col1.number_input("Platz", min_value=1, max_value=999, value=1, step=1, key="manual_certificate_place")
-        rows = [
-            {
-                "place": int(manual_place),
-                "name": manual_name.strip() or "Name",
-                "competition": manual_competition.strip() or "Bewerb",
-                "age_class": manual_age_class.strip(),
-                "time": manual_time.strip(),
-                "copy": 1,
-            }
-        ]
-    elif scope == "Alle":
+    if scope == "Alle":
         rows = certificate_rows(results, None) + ortsmeister_certificate_rows(db) + relay_certificate_rows(db)
     elif scope == "Ortsmeister":
         rows = ortsmeister_certificate_rows(db)
@@ -2425,17 +2407,46 @@ def page_urkunden(db):
         "date_visible": st.session_state["date_visible"],
     }
 
+    with st.expander("Manuelle Urkunde fuer Notfaelle"):
+        manual_col1, manual_col2 = st.columns(2)
+        manual_name = manual_col1.text_input("Name", key="manual_certificate_name")
+        manual_competition = manual_col2.text_input("Bewerb", key="manual_certificate_competition")
+        manual_age_class = manual_col1.text_input("Altersklasse", key="manual_certificate_age_class")
+        manual_time = manual_col2.text_input("Zeit", key="manual_certificate_time", placeholder="01:15.20")
+        manual_place = manual_col1.number_input(
+            "Platz",
+            min_value=1,
+            max_value=999,
+            value=1,
+            step=1,
+            key="manual_certificate_place",
+        )
+        manual_rows = [
+            {
+                "place": int(manual_place),
+                "name": manual_name.strip() or "Name",
+                "competition": manual_competition.strip() or "Bewerb",
+                "age_class": manual_age_class.strip(),
+                "time": manual_time.strip(),
+                "copy": 1,
+            }
+        ]
+        st.download_button(
+            "Manuelle Urkunde als PDF herunterladen",
+            data=build_certificates_pdf(manual_rows, settings),
+            file_name="urkunde-manuell.pdf",
+            mime="application/pdf",
+        )
+
     with preview_col:
         st.subheader("PDF Vorschau")
         render_certificate_pdf_preview(rows[0] if rows else None, settings)
 
     if rows:
-        download_label = "Manuelle Urkunde als PDF herunterladen" if scope == "Manuell" else "Urkunden Serienbrief als PDF herunterladen"
-        download_file_name = "urkunde-manuell.pdf" if scope == "Manuell" else "urkunden-serienbrief.pdf"
         st.download_button(
-            download_label,
+            "Urkunden Serienbrief als PDF herunterladen",
             data=build_certificates_pdf(rows, settings),
-            file_name=download_file_name,
+            file_name="urkunden-serienbrief.pdf",
             mime="application/pdf",
             type="primary",
         )
