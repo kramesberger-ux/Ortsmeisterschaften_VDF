@@ -152,8 +152,11 @@ def normalize_time_input(key):
     st.session_state[key] = format_time_input(ms)
 
 
-def center_certificate_field(prefix):
-    st.session_state[f"{prefix}_x"] = 105.0
+def center_certificate_field(prefix, axis):
+    if axis in {"x", "both"}:
+        st.session_state[f"{prefix}_x"] = 105.0
+    if axis in {"y", "both"}:
+        st.session_state[f"{prefix}_y"] = 148.5
 
 
 def save_lane_time(lane_id, key):
@@ -2369,11 +2372,24 @@ def page_urkunden(db):
             visibility_cols[index % 3].checkbox(label, key=f"{config['prefix']}_visible")
 
         selected = defaults[field]["prefix"]
-        st.button(
-            "Feld zentrieren",
-            key=f"center_{selected}",
+        center_cols = st.columns(3)
+        center_cols[0].button(
+            "Horizontal zentrieren",
+            key=f"center_x_{selected}",
             on_click=center_certificate_field,
-            args=(selected,),
+            args=(selected, "x"),
+        )
+        center_cols[1].button(
+            "Vertikal zentrieren",
+            key=f"center_y_{selected}",
+            on_click=center_certificate_field,
+            args=(selected, "y"),
+        )
+        center_cols[2].button(
+            "Feld zentrieren",
+            key=f"center_both_{selected}",
+            on_click=center_certificate_field,
+            args=(selected, "both"),
         )
         st.slider("X von links", 0.0, 210.0, key=f"{selected}_x", step=0.5, format="%.1f mm")
         st.slider("Y von oben", 0.0, 297.0, key=f"{selected}_y", step=0.5, format="%.1f mm")
