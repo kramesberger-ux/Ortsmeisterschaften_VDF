@@ -919,6 +919,18 @@ def build_full_report_pdf(db):
             spaceAfter=2 * mm,
         )
     )
+    styles.add(
+        ParagraphStyle(
+            name="ReportSubsection",
+            parent=styles["Heading3"],
+            fontName="Helvetica-Bold",
+            fontSize=10,
+            leading=12,
+            textColor=colors.HexColor("#1f2933"),
+            spaceBefore=2 * mm,
+            spaceAfter=1 * mm,
+        )
+    )
 
     def add_table(story, rows, widths):
         table = Table(rows, colWidths=widths, repeatRows=1)
@@ -992,54 +1004,74 @@ def build_full_report_pdf(db):
     add_table(story, competition_rows, [12 * mm, 130 * mm, 16 * mm])
 
     story.append(Paragraph("Startlisten", styles["ReportSection"]))
-    start_rows = [["Bewerb", "Lauf", "Bahn", "Teilnehmer/Staffel"]]
     run_numbers = global_run_numbers(bewerbe)
     for b in bewerbe:
         is_relay = is_staffel_bewerb(b)
+        story.append(Paragraph(f"Bewerb ID {b.id}: {b.full_name()}", styles["ReportSubsection"]))
+        if not b.laufe:
+            story.append(Paragraph("Noch keine Laeufe erzeugt.", styles["Normal"]))
+            story.append(Spacer(1, 2 * mm))
+            continue
         for lauf in sorted(b.laufe, key=lambda item: item.laufnummer):
+            story.append(Paragraph(f"Lauf {run_numbers[lauf.id]}", styles["Normal"]))
+            start_rows = [["Lauf", "Bahn", "Teilnehmer/Staffel"]]
             for bahn in sorted(lauf.laufbahnen, key=lambda item: item.bahn):
                 name = "-"
                 if bahn.teilnehmer:
                     name = bahn.teilnehmer.staffel if is_relay else bahn.teilnehmer.display_name()
-                start_rows.append([f"ID {b.id}", str(run_numbers[lauf.id]), str(bahn.bahn), name or "-"])
-    add_table(story, start_rows, [20 * mm, 14 * mm, 14 * mm, 110 * mm])
+                start_rows.append([str(run_numbers[lauf.id]), str(bahn.bahn), name or "-"])
+            add_table(story, start_rows, [18 * mm, 18 * mm, 122 * mm])
 
     story.append(Paragraph("Ergebnisse", styles["ReportSection"]))
-    result_rows = [["Platz", "Bewerb", "Altersklasse", "Teilnehmer/Staffel", "Zeit"]]
     for bewerb_data in results:
         is_relay = is_staffel_bewerb(bewerb_data["bewerb"])
         result_groups = [{"altersklasse": None, "results": bewerb_data["results"]}] if is_relay else bewerb_data["altersklassen"]
+        story.append(
+            Paragraph(
+                f"Bewerb ID {bewerb_data['bewerb'].id}: {bewerb_data['bewerb'].full_name()}",
+                styles["ReportSubsection"],
+            )
+        )
+        if not bewerb_data["results"]:
+            story.append(Paragraph("Noch keine Zeiten vorhanden.", styles["Normal"]))
+            story.append(Spacer(1, 2 * mm))
+            continue
         for group in result_groups:
+            story.append(Paragraph(result_group_label(bewerb_data["bewerb"], group), styles["Normal"]))
+            result_rows = [["Platz", "Teilnehmer/Staffel", "Lauf", "Bahn", "Zeit"]]
             for rank, item in enumerate(group["results"], start=1):
                 name = item["teilnehmer"].staffel if is_relay and item["teilnehmer"].staffel else item["teilnehmer"].display_name()
                 result_rows.append(
                     [
                         str(rank),
-                        f"ID {bewerb_data['bewerb'].id}",
-                        result_group_label(bewerb_data["bewerb"], group),
                         name,
+                        str(item["lauf"].laufnummer),
+                        str(item["bahn"].bahn),
                         format_ms(item["zeit_ms"]),
                     ]
                 )
-    add_table(story, result_rows, [12 * mm, 18 * mm, 48 * mm, 58 * mm, 22 * mm])
+            add_table(story, result_rows, [14 * mm, 82 * mm, 18 * mm, 18 * mm, 26 * mm])
 
     story.append(Paragraph("Ortsmeister", styles["ReportSection"]))
     om_bewerbe_m = [b for b in bewerbe if not is_staffel_bewerb(b) and b.ortsmeister_relevant and normalized_gender(b.geschlecht) in {"maennlich", "mixed"}]
     om_bewerbe_w = [b for b in bewerbe if not is_staffel_bewerb(b) and b.ortsmeister_relevant and normalized_gender(b.geschlecht) in {"weiblich", "mixed"}]
-    om_rows = [["Kategorie", "Rang", "Teilnehmer", "Gesamtzeit"]]
+    om_rows = [["Kategorie", "Teilnehmer", "Gesamtzeit"]]
     for label, gender, selected in [("Maennlich", "maennlich", om_bewerbe_m), ("Weiblich", "weiblich", om_bewerbe_w)]:
-        for rank, item in enumerate(build_ortsmeister_results(db, [b.id for b in selected], gender), start=1):
-            om_rows.append([label, str(rank), item["teilnehmer"].display_name(), format_ms(item["gesamt_ms"])])
-    add_table(story, om_rows, [28 * mm, 14 * mm, 82 * mm, 34 * mm])
+        rows = build_ortsmeister_results(db, [b.id for b in selected], gender)
+        if rows:
+            winner = rows[0]
+            om_rows.append([label, winner["teilnehmer"].display_name(), format_ms(winner["gesamt_ms"])])
+    add_table(story, om_rows, [34 * mm, 88 * mm, 36 * mm])
 
     story.append(Paragraph("Tagesschnellste", styles["ReportSection"]))
-    fastest_rows = [["Distanz", "Kategorie", "Rang", "Teilnehmer", "Zeit"]]
+    fastest_rows = [["Distanz", "Kategorie", "Teilnehmer", "Zeit"]]
     for distance, gender_groups in day_fastest.items():
         for gender, rows in gender_groups.items():
             label = "Maennlich" if gender == "maennlich" else "Weiblich"
-            for rank, item in enumerate(rows[:10], start=1):
-                fastest_rows.append([distance, label, str(rank), item["teilnehmer"].display_name(), format_ms(item["zeit_ms"])])
-    add_table(story, fastest_rows, [22 * mm, 28 * mm, 14 * mm, 70 * mm, 24 * mm])
+            if rows:
+                winner = rows[0]
+                fastest_rows.append([distance, label, winner["teilnehmer"].display_name(), format_ms(winner["zeit_ms"])])
+    add_table(story, fastest_rows, [24 * mm, 32 * mm, 76 * mm, 26 * mm])
 
     story.append(Paragraph("Staffelwertung", styles["ReportSection"]))
     relay_table_rows = [["Rang", "Staffel", "Zeit", "Abweichung"]]
@@ -1069,8 +1101,7 @@ def certificate_rows(results, max_place):
                     else item["teilnehmer"].display_name()
                 )
                 competition = bewerb_data["bewerb"].full_name()
-                if not is_relay:
-                    competition = f"{competition} - {altersklasse_label(group['altersklasse'])}"
+                age_class = result_group_label(bewerb_data["bewerb"], group)
                 copies = 4 if is_relay else 1
                 for copy_index in range(1, copies + 1):
                     rows.append(
@@ -1078,6 +1109,7 @@ def certificate_rows(results, max_place):
                             "place": place,
                             "name": certificate_name,
                             "competition": competition,
+                            "age_class": age_class,
                             "time": format_ms(item["zeit_ms"]),
                             "copy": copy_index,
                         }
@@ -1113,6 +1145,7 @@ def ortsmeister_certificate_rows(db):
                     "place": place,
                     "name": item["teilnehmer"].display_name(),
                     "competition": label,
+                    "age_class": "",
                     "time": format_ms(item["gesamt_ms"]),
                     "copy": 1,
                 }
@@ -1130,6 +1163,7 @@ def relay_certificate_rows(db):
                     "place": place,
                     "name": item["staffel"],
                     "competition": "Staffelwertung",
+                    "age_class": "Staffel",
                     "time": format_ms(item["zeit_ms"]),
                     "copy": copy_index,
                 }
@@ -1149,39 +1183,52 @@ def build_certificates_pdf(rows, settings):
     date_text = settings["date_text"].strip()
 
     for row in rows:
-        draw_centered_certificate_text(
-            pdf,
-            row["name"],
-            settings["name_x"],
-            settings["name_y"],
-            "Helvetica-Bold",
-            settings["name_size"],
-        )
-        draw_centered_certificate_text(
-            pdf,
-            row["competition"],
-            settings["competition_x"],
-            settings["competition_y"],
-            "Helvetica",
-            settings["competition_size"],
-        )
-        draw_centered_certificate_text(
-            pdf,
-            f"{row['place']}. Platz",
-            settings["place_x"],
-            settings["place_y"],
-            "Helvetica-Bold",
-            settings["place_size"],
-        )
-        draw_centered_certificate_text(
-            pdf,
-            row["time"],
-            settings["time_x"],
-            settings["time_y"],
-            "Helvetica",
-            settings["time_size"],
-        )
-        if date_text:
+        if settings.get("name_visible", True):
+            draw_centered_certificate_text(
+                pdf,
+                row["name"],
+                settings["name_x"],
+                settings["name_y"],
+                "Helvetica-Bold",
+                settings["name_size"],
+            )
+        if settings.get("competition_visible", True):
+            draw_centered_certificate_text(
+                pdf,
+                row["competition"],
+                settings["competition_x"],
+                settings["competition_y"],
+                "Helvetica",
+                settings["competition_size"],
+            )
+        if settings.get("age_class_visible", True) and row.get("age_class"):
+            draw_centered_certificate_text(
+                pdf,
+                row["age_class"],
+                settings["age_class_x"],
+                settings["age_class_y"],
+                "Helvetica",
+                settings["age_class_size"],
+            )
+        if settings.get("place_visible", True):
+            draw_centered_certificate_text(
+                pdf,
+                f"{row['place']}. Platz",
+                settings["place_x"],
+                settings["place_y"],
+                "Helvetica-Bold",
+                settings["place_size"],
+            )
+        if settings.get("time_visible", True):
+            draw_centered_certificate_text(
+                pdf,
+                row["time"],
+                settings["time_x"],
+                settings["time_y"],
+                "Helvetica",
+                settings["time_size"],
+            )
+        if settings.get("date_visible", True) and date_text:
             draw_centered_certificate_text(
                 pdf,
                 date_text,
@@ -1203,6 +1250,7 @@ def render_certificate_pdf_preview(row, settings):
             "place": 1,
             "name": "Max Mustermann",
             "competition": "50m Brust maennlich (2010-1949)",
+            "age_class": "Jugend - 50 m (Jg. 2015)",
             "time": "01:15.20",
         }
     preview_pdf = build_certificates_pdf([row], settings)
@@ -2248,7 +2296,19 @@ def page_urkunden(db):
         for bewerb_data in results
         if not is_staffel_bewerb(bewerb_data["bewerb"])
     }
-    certificate_options = ["Alle", "Ortsmeister", "Staffel"] + list(bewerb_options.keys())
+    altersklasse_options = {}
+    for bewerb_data in results:
+        if is_staffel_bewerb(bewerb_data["bewerb"]):
+            continue
+        for group in bewerb_data["altersklassen"]:
+            if not group["results"]:
+                continue
+            label = (
+                f"Bewerb ID {bewerb_data['bewerb'].id}: "
+                f"{bewerb_data['bewerb'].full_name()} - {result_group_label(bewerb_data['bewerb'], group)}"
+            )
+            altersklasse_options[label] = {"bewerb": bewerb_data["bewerb"], "group": group}
+    certificate_options = ["Alle", "Ortsmeister", "Staffel"] + list(bewerb_options.keys()) + list(altersklasse_options.keys())
     scope = selection_col.selectbox("Urkunden fuer", certificate_options)
     date_text = date_col.text_input("Datum/Ort", value=f"Vorchdorf, {datetime.now().strftime('%d.%m.%Y')}")
     if scope == "Alle":
@@ -2257,18 +2317,31 @@ def page_urkunden(db):
         rows = ortsmeister_certificate_rows(db)
     elif scope == "Staffel":
         rows = relay_certificate_rows(db)
+    elif scope in altersklasse_options:
+        option = altersklasse_options[scope]
+        rows = certificate_rows(
+            [
+                {
+                    "bewerb": option["bewerb"],
+                    "results": option["group"]["results"],
+                    "altersklassen": [option["group"]],
+                }
+            ],
+            None,
+        )
     else:
         rows = certificate_rows([bewerb_options[scope]], None)
 
     controls_col, preview_col = st.columns([1, 1])
     with controls_col:
         st.subheader("Druckposition")
-        field = st.selectbox("Feld", ["Name", "Bewerb", "Platz", "Zeit", "Datum"])
+        field = st.selectbox("Feld", ["Name", "Bewerb", "Altersklasse", "Platz", "Zeit", "Datum"])
         defaults = {
             "Name": {"prefix": "name", "x": 105.0, "y": 118.0, "size": 24},
             "Bewerb": {"prefix": "competition", "x": 105.0, "y": 142.0, "size": 14},
-            "Platz": {"prefix": "place", "x": 105.0, "y": 162.0, "size": 22},
-            "Zeit": {"prefix": "time", "x": 105.0, "y": 181.0, "size": 16},
+            "Altersklasse": {"prefix": "age_class", "x": 105.0, "y": 156.0, "size": 14},
+            "Platz": {"prefix": "place", "x": 105.0, "y": 174.0, "size": 22},
+            "Zeit": {"prefix": "time", "x": 105.0, "y": 193.0, "size": 16},
             "Datum": {"prefix": "date", "x": 105.0, "y": 230.0, "size": 12},
         }
         for config in defaults.values():
@@ -2276,6 +2349,12 @@ def page_urkunden(db):
             st.session_state.setdefault(f"{prefix}_x", config["x"])
             st.session_state.setdefault(f"{prefix}_y", config["y"])
             st.session_state.setdefault(f"{prefix}_size", config["size"])
+            st.session_state.setdefault(f"{prefix}_visible", True)
+
+        st.markdown("**Druckfelder**")
+        visibility_cols = st.columns(3)
+        for index, (label, config) in enumerate(defaults.items()):
+            visibility_cols[index % 3].checkbox(label, key=f"{config['prefix']}_visible")
 
         selected = defaults[field]["prefix"]
         st.button(
@@ -2295,6 +2374,9 @@ def page_urkunden(db):
         "competition_x": st.session_state["competition_x"],
         "competition_y": st.session_state["competition_y"],
         "competition_size": st.session_state["competition_size"],
+        "age_class_x": st.session_state["age_class_x"],
+        "age_class_y": st.session_state["age_class_y"],
+        "age_class_size": st.session_state["age_class_size"],
         "place_x": st.session_state["place_x"],
         "place_y": st.session_state["place_y"],
         "place_size": st.session_state["place_size"],
@@ -2305,6 +2387,12 @@ def page_urkunden(db):
         "date_y": st.session_state["date_y"],
         "date_size": st.session_state["date_size"],
         "date_text": date_text,
+        "name_visible": st.session_state["name_visible"],
+        "competition_visible": st.session_state["competition_visible"],
+        "age_class_visible": st.session_state["age_class_visible"],
+        "place_visible": st.session_state["place_visible"],
+        "time_visible": st.session_state["time_visible"],
+        "date_visible": st.session_state["date_visible"],
     }
 
     with preview_col:
@@ -2326,6 +2414,7 @@ def page_urkunden(db):
                         "Platz": row["place"],
                         "Teilnehmer": row["name"],
                         "Bewerb": row["competition"],
+                        "Altersklasse": row.get("age_class", ""),
                         "Zeit": row["time"],
                         "Kopie": row.get("copy", 1),
                     }
