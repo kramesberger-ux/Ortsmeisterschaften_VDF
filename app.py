@@ -23,6 +23,7 @@ from sqlalchemy import text
 from models import (
     Anmeldung,
     Altersklasse,
+    AppMeta,
     Base,
     Bewerb,
     Jahrgang,
@@ -159,6 +160,82 @@ def center_certificate_field(prefix, axis):
         st.session_state[f"{prefix}_y"] = 148.5
 
 
+CERTIFICATE_TEMPLATE_KEY = "certificate_template"
+
+
+def certificate_field_defaults():
+    return {
+        "Name": {"prefix": "name", "x": 105.0, "y": 118.0, "size": 24},
+        "Bewerb": {"prefix": "competition", "x": 105.0, "y": 142.0, "size": 14},
+        "Altersklasse": {"prefix": "age_class", "x": 105.0, "y": 156.0, "size": 14},
+        "Platz": {"prefix": "place", "x": 105.0, "y": 174.0, "size": 22},
+        "Zeit": {"prefix": "time", "x": 105.0, "y": 193.0, "size": 16},
+        "Datum": {"prefix": "date", "x": 105.0, "y": 230.0, "size": 12},
+    }
+
+
+def load_certificate_template(db):
+    meta = db.query(AppMeta).get(CERTIFICATE_TEMPLATE_KEY)
+    if not meta:
+        return {}
+    try:
+        return json.loads(meta.value)
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_certificate_template(db, settings):
+    value = json.dumps(settings, ensure_ascii=False)
+    meta = db.query(AppMeta).get(CERTIFICATE_TEMPLATE_KEY)
+    if meta:
+        meta.value = value
+    else:
+        db.add(AppMeta(key=CERTIFICATE_TEMPLATE_KEY, value=value))
+    db.commit()
+
+
+def initialize_certificate_template_state(db, defaults):
+    if st.session_state.get("certificate_template_initialized"):
+        return
+    template = load_certificate_template(db)
+    for config in defaults.values():
+        prefix = config["prefix"]
+        st.session_state[f"{prefix}_x"] = float(template.get(f"{prefix}_x", config["x"]))
+        st.session_state[f"{prefix}_y"] = float(template.get(f"{prefix}_y", config["y"]))
+        st.session_state[f"{prefix}_size"] = int(template.get(f"{prefix}_size", config["size"]))
+        st.session_state[f"{prefix}_visible"] = bool(template.get(f"{prefix}_visible", True))
+    st.session_state["certificate_date_text"] = template.get(
+        "date_text",
+        f"Vorchdorf, {datetime.now().strftime('%d.%m.%Y')}",
+    )
+    st.session_state["certificate_template_initialized"] = True
+
+
+def collect_certificate_template_settings(defaults):
+    settings = {}
+    for config in defaults.values():
+        prefix = config["prefix"]
+        settings[f"{prefix}_x"] = st.session_state[f"{prefix}_x"]
+        settings[f"{prefix}_y"] = st.session_state[f"{prefix}_y"]
+        settings[f"{prefix}_size"] = st.session_state[f"{prefix}_size"]
+        settings[f"{prefix}_visible"] = st.session_state[f"{prefix}_visible"]
+    settings["date_text"] = st.session_state.get("certificate_date_text", "")
+    return settings
+
+
+def apply_certificate_template_to_session(template, defaults):
+    for config in defaults.values():
+        prefix = config["prefix"]
+        st.session_state[f"{prefix}_x"] = float(template.get(f"{prefix}_x", config["x"]))
+        st.session_state[f"{prefix}_y"] = float(template.get(f"{prefix}_y", config["y"]))
+        st.session_state[f"{prefix}_size"] = int(template.get(f"{prefix}_size", config["size"]))
+        st.session_state[f"{prefix}_visible"] = bool(template.get(f"{prefix}_visible", True))
+    st.session_state["certificate_date_text"] = template.get(
+        "date_text",
+        f"Vorchdorf, {datetime.now().strftime('%d.%m.%Y')}",
+    )
+
+
 def save_lane_time(lane_id, key):
     ms = parse_time_to_ms(st.session_state.get(key, ""))
     st.session_state[key] = format_time_input(ms)
@@ -204,6 +281,7 @@ def export_backup(db):
             }
             for item in db.query(Altersklasse).order_by(Altersklasse.sortierung, Altersklasse.id).all()
         ],
+        "certificate_template": load_certificate_template(db),
         "bewerbe": [
             {
                 "id": item.id,
@@ -291,6 +369,8 @@ def restore_backup(db, data):
     for item in data.get("laufbahnen", []):
         db.add(LaufBahn(**item))
     db.commit()
+    if data.get("certificate_template"):
+        save_certificate_template(db, data["certificate_template"])
     if not data.get("altersklassen"):
         create_default_altersklassen()
 
@@ -2305,6 +2385,8 @@ def page_urkunden(db):
     st.caption("Serienbrief fuer vorgedruckte Urkunden. Das PDF enthaelt nur die einzudruckenden Textfelder.")
 
     results = build_results(db)
+    defaults = certificate_field_defaults()
+    initialize_certificate_template_state(db, defaults)
     selection_col, date_col = st.columns([1, 1])
     bewerb_options = {
         f"Bewerb ID {bewerb_data['bewerb'].id}: {bewerb_data['bewerb'].full_name()}": bewerb_data
@@ -2325,7 +2407,7 @@ def page_urkunden(db):
             altersklasse_options[label] = {"bewerb": bewerb_data["bewerb"], "group": group}
     certificate_options = ["Alle", "Ortsmeister", "Staffel"] + list(bewerb_options.keys()) + list(altersklasse_options.keys())
     scope = selection_col.selectbox("Urkunden fuer", certificate_options)
-    date_text = date_col.text_input("Datum/Ort", value=f"Vorchdorf, {datetime.now().strftime('%d.%m.%Y')}")
+    date_col.text_input("Datum/Ort", key="certificate_date_text")
     if scope == "Alle":
         rows = certificate_rows(results, None) + ortsmeister_certificate_rows(db) + relay_certificate_rows(db)
     elif scope == "Ortsmeister":
@@ -2350,21 +2432,6 @@ def page_urkunden(db):
     controls_col, preview_col = st.columns([1, 1])
     with controls_col:
         st.subheader("Druckposition")
-        defaults = {
-            "Name": {"prefix": "name", "x": 105.0, "y": 118.0, "size": 24},
-            "Bewerb": {"prefix": "competition", "x": 105.0, "y": 142.0, "size": 14},
-            "Altersklasse": {"prefix": "age_class", "x": 105.0, "y": 156.0, "size": 14},
-            "Platz": {"prefix": "place", "x": 105.0, "y": 174.0, "size": 22},
-            "Zeit": {"prefix": "time", "x": 105.0, "y": 193.0, "size": 16},
-            "Datum": {"prefix": "date", "x": 105.0, "y": 230.0, "size": 12},
-        }
-        for config in defaults.values():
-            prefix = config["prefix"]
-            st.session_state.setdefault(f"{prefix}_x", config["x"])
-            st.session_state.setdefault(f"{prefix}_y", config["y"])
-            st.session_state.setdefault(f"{prefix}_size", config["size"])
-            st.session_state.setdefault(f"{prefix}_visible", True)
-
         field_tabs = st.tabs(list(defaults.keys()))
         for tab, (label, config) in zip(field_tabs, defaults.items()):
             prefix = config["prefix"]
@@ -2407,33 +2474,26 @@ def page_urkunden(db):
                 )
                 st.slider(f"{label}: Schriftgroesse", 8, 48, key=f"{prefix}_size")
 
-    settings = {
-        "name_x": st.session_state["name_x"],
-        "name_y": st.session_state["name_y"],
-        "name_size": st.session_state["name_size"],
-        "competition_x": st.session_state["competition_x"],
-        "competition_y": st.session_state["competition_y"],
-        "competition_size": st.session_state["competition_size"],
-        "age_class_x": st.session_state["age_class_x"],
-        "age_class_y": st.session_state["age_class_y"],
-        "age_class_size": st.session_state["age_class_size"],
-        "place_x": st.session_state["place_x"],
-        "place_y": st.session_state["place_y"],
-        "place_size": st.session_state["place_size"],
-        "time_x": st.session_state["time_x"],
-        "time_y": st.session_state["time_y"],
-        "time_size": st.session_state["time_size"],
-        "date_x": st.session_state["date_x"],
-        "date_y": st.session_state["date_y"],
-        "date_size": st.session_state["date_size"],
-        "date_text": date_text,
-        "name_visible": st.session_state["name_visible"],
-        "competition_visible": st.session_state["competition_visible"],
-        "age_class_visible": st.session_state["age_class_visible"],
-        "place_visible": st.session_state["place_visible"],
-        "time_visible": st.session_state["time_visible"],
-        "date_visible": st.session_state["date_visible"],
-    }
+    settings = collect_certificate_template_settings(defaults)
+
+    with controls_col:
+        st.subheader("Vorlage")
+        template_cols = st.columns(3)
+        if template_cols[0].button("Vorlage speichern", type="primary"):
+            save_certificate_template(db, settings)
+            st.success("Urkundenvorlage wurde gespeichert.")
+        if template_cols[1].button("Vorlage laden"):
+            template = load_certificate_template(db)
+            if template:
+                apply_certificate_template_to_session(template, defaults)
+                st.success("Urkundenvorlage wurde geladen.")
+                refresh()
+            else:
+                st.info("Noch keine gespeicherte Vorlage vorhanden.")
+        if template_cols[2].button("Standardwerte"):
+            apply_certificate_template_to_session({}, defaults)
+            st.success("Standardwerte wurden geladen.")
+            refresh()
 
     with st.expander("Manuelle Urkunde fuer Notfaelle"):
         manual_col1, manual_col2 = st.columns(2)
