@@ -90,15 +90,15 @@ def create_default_altersklassen():
         if db.query(Altersklasse).first():
             return
         defaults = [
-            ("Kinder", "25 m", 2018, 2100),
-            ("Kinder", "25 m", 2017, 2017),
-            ("Kinder", "25 m", 2016, 2016),
-            ("Jugend", "50 m", 2015, 2015),
-            ("Jugend", "50 m", 2014, 2014),
-            ("Jugend", "50 m", 2013, 2013),
-            ("Jugend", "50 m", 2012, 2012),
-            ("Jugend", "50 m", 2011, 2011),
-            ("Allgemeine Klasse", "100 m", 2001, 2010),
+            ("Kinder", "25", 2018, 2100),
+            ("Kinder", "25", 2017, 2017),
+            ("Kinder", "25", 2016, 2016),
+            ("Jugend", "50", 2015, 2015),
+            ("Jugend", "50", 2014, 2014),
+            ("Jugend", "50", 2013, 2013),
+            ("Jugend", "50", 2012, 2012),
+            ("Jugend", "50", 2011, 2011),
+            ("Allgemeine Klasse", "100", 2001, 2010),
             ("Altersklasse I", "", 1991, 2000),
             ("Altersklasse II", "", 1981, 1990),
             ("Altersklasse III", "", 1971, 1980),
@@ -375,10 +375,19 @@ def altersklasse_for_birth_year(altersklassen, geburtsjahr):
     return None
 
 
+def normalize_distance_number(value):
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def format_distance_m(value):
+    distance = normalize_distance_number(value)
+    return f"{distance} m" if distance else ""
+
+
 def altersklasse_label(altersklasse):
     if not altersklasse:
         return "Ohne Altersklasse"
-    distanz = f" - {altersklasse.distanz}" if altersklasse.distanz else ""
+    distanz = f" - {format_distance_m(altersklasse.distanz)}" if altersklasse.distanz else ""
     return f"{altersklasse.name}{distanz} ({altersklasse.display_range()})"
 
 
@@ -1789,7 +1798,7 @@ def page_altersklassen(db):
         st.subheader("Altersklasse anlegen")
         name_col, dist_col, from_col, to_col, sort_col = st.columns([3, 2, 2, 2, 1])
         name = name_col.text_input("Name", placeholder="Kinder")
-        distanz = dist_col.text_input("Distanz", placeholder="25 m")
+        distanz = dist_col.number_input("Distanz in m", min_value=0, max_value=9999, value=25, step=1)
         jahr_von = from_col.number_input("Jahr von", min_value=0, max_value=2100, value=2018, step=1)
         jahr_bis = to_col.number_input("Jahr bis", min_value=0, max_value=2100, value=2100, step=1)
         sortierung = sort_col.number_input("Sort.", min_value=0, max_value=999, value=1, step=1)
@@ -1800,7 +1809,7 @@ def page_altersklassen(db):
             db.add(
                 Altersklasse(
                     name=name.strip(),
-                    distanz=distanz.strip(),
+                    distanz=str(int(distanz)) if int(distanz) > 0 else "",
                     jahr_von=int(jahr_von),
                     jahr_bis=int(jahr_bis),
                     sortierung=int(sortierung),
@@ -1848,9 +1857,12 @@ def page_altersklassen(db):
             key=f"ak_name_{item.id}",
             label_visibility="collapsed",
         )
-        row_cols[2].text_input(
-            "Distanz",
-            value=item.distanz or "",
+        row_cols[2].number_input(
+            "Distanz in m",
+            min_value=0,
+            max_value=9999,
+            value=int(normalize_distance_number(item.distanz) or 0),
+            step=1,
             key=f"ak_distanz_{item.id}",
             label_visibility="collapsed",
         )
@@ -1893,7 +1905,7 @@ def page_altersklassen(db):
                 valid = False
                 continue
             altersklasse.name = name
-            altersklasse.distanz = st.session_state.get(f"ak_distanz_{item.id}", "").strip()
+            altersklasse.distanz = normalize_distance_number(st.session_state.get(f"ak_distanz_{item.id}", ""))
             altersklasse.jahr_von = jahr_von
             altersklasse.jahr_bis = jahr_bis
             altersklasse.sortierung = int(st.session_state.get(f"ak_sortierung_{item.id}", item.sortierung or 0))
