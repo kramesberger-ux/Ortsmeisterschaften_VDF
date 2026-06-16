@@ -22,6 +22,7 @@ from sqlalchemy import text
 
 from models import (
     Anmeldung,
+    Altersklasse,
     Base,
     Bewerb,
     Jahrgang,
@@ -69,11 +70,54 @@ def init_database():
         teilnehmer_column_names = {column[1] for column in teilnehmer_columns}
         if "gast" not in teilnehmer_column_names:
             connection.execute(text("ALTER TABLE teilnehmer ADD COLUMN gast BOOLEAN DEFAULT 0"))
+        altersklasse_columns = connection.execute(text("PRAGMA table_info(altersklasse)")).fetchall()
+        altersklasse_column_names = {column[1] for column in altersklasse_columns}
+        if altersklasse_columns and "distanz" not in altersklasse_column_names:
+            connection.execute(text("ALTER TABLE altersklasse ADD COLUMN distanz VARCHAR(50) DEFAULT ''"))
+        if altersklasse_columns and "sortierung" not in altersklasse_column_names:
+            connection.execute(text("ALTER TABLE altersklasse ADD COLUMN sortierung INTEGER DEFAULT 0"))
     create_sample_data()
+    create_default_altersklassen()
 
 
 def get_db():
     return SessionLocal()
+
+
+def create_default_altersklassen():
+    db = get_db()
+    try:
+        if db.query(Altersklasse).first():
+            return
+        defaults = [
+            ("Kinder", "25 m", 2018, 2100),
+            ("Kinder", "25 m", 2017, 2017),
+            ("Kinder", "25 m", 2016, 2016),
+            ("Jugend", "50 m", 2015, 2015),
+            ("Jugend", "50 m", 2014, 2014),
+            ("Jugend", "50 m", 2013, 2013),
+            ("Jugend", "50 m", 2012, 2012),
+            ("Jugend", "50 m", 2011, 2011),
+            ("Allgemeine Klasse", "100 m", 2001, 2010),
+            ("Altersklasse I", "", 1991, 2000),
+            ("Altersklasse II", "", 1981, 1990),
+            ("Altersklasse III", "", 1971, 1980),
+            ("Altersklasse IV", "", 1951, 1970),
+            ("Altersklasse V", "", 0, 1950),
+        ]
+        for index, (name, distanz, jahr_von, jahr_bis) in enumerate(defaults, start=1):
+            db.add(
+                Altersklasse(
+                    name=name,
+                    distanz=distanz,
+                    jahr_von=jahr_von,
+                    jahr_bis=jahr_bis,
+                    sortierung=index,
+                )
+            )
+        db.commit()
+    finally:
+        db.close()
 
 
 def refresh():
@@ -146,6 +190,17 @@ def export_backup(db):
             {"id": item.id, "name": item.name, "jahr_von": item.jahr_von, "jahr_bis": item.jahr_bis}
             for item in db.query(Jahrgang).order_by(Jahrgang.id).all()
         ],
+        "altersklassen": [
+            {
+                "id": item.id,
+                "name": item.name,
+                "distanz": item.distanz or "",
+                "jahr_von": item.jahr_von,
+                "jahr_bis": item.jahr_bis,
+                "sortierung": item.sortierung or 0,
+            }
+            for item in db.query(Altersklasse).order_by(Altersklasse.sortierung, Altersklasse.id).all()
+        ],
         "bewerbe": [
             {
                 "id": item.id,
@@ -202,12 +257,17 @@ def export_backup(db):
 
 
 def restore_backup(db, data):
-    for model in [LaufBahn, Lauf, Anmeldung, Teilnehmer, Bewerb, Jahrgang]:
+    for model in [LaufBahn, Lauf, Anmeldung, Teilnehmer, Bewerb, Jahrgang, Altersklasse]:
         db.query(model).delete(synchronize_session=False)
     db.flush()
 
     for item in data.get("jahrgaenge", []):
         db.add(Jahrgang(**item))
+    db.flush()
+    for index, item in enumerate(data.get("altersklassen", []), start=1):
+        item.setdefault("distanz", "")
+        item.setdefault("sortierung", index)
+        db.add(Altersklasse(**item))
     db.flush()
     for item in data.get("bewerbe", []):
         item.setdefault("ortsmeister_relevant", False)
@@ -228,12 +288,15 @@ def restore_backup(db, data):
     for item in data.get("laufbahnen", []):
         db.add(LaufBahn(**item))
     db.commit()
+    if not data.get("altersklassen"):
+        create_default_altersklassen()
 
 
 def reset_championship(db):
-    for model in [LaufBahn, Lauf, Anmeldung, Teilnehmer, Bewerb, Jahrgang]:
+    for model in [LaufBahn, Lauf, Anmeldung, Teilnehmer, Bewerb, Jahrgang, Altersklasse]:
         db.query(model).delete(synchronize_session=False)
     db.commit()
+    create_default_altersklassen()
 
 
 def clear_reset_checkboxes():
@@ -305,8 +368,57 @@ def global_run_numbers(bewerbe):
     return {lauf.id: number for number, lauf in enumerate(runs, start=1)}
 
 
+def altersklasse_for_birth_year(altersklassen, geburtsjahr):
+    for altersklasse in altersklassen:
+        if altersklasse.jahr_von <= geburtsjahr <= altersklasse.jahr_bis:
+            return altersklasse
+    return None
+
+
+def altersklasse_label(altersklasse):
+    if not altersklasse:
+        return "Ohne Altersklasse"
+    distanz = f" - {altersklasse.distanz}" if altersklasse.distanz else ""
+    return f"{altersklasse.name}{distanz} ({altersklasse.display_range()})"
+
+
+def result_group_label(bewerb, group):
+    if is_staffel_bewerb(bewerb):
+        return "Staffel"
+    return altersklasse_label(group["altersklasse"])
+
+
+def group_results_by_altersklasse(lane_results, altersklassen):
+    grouped = []
+    groups_by_id = {}
+    fallback = {"altersklasse": None, "results": [], "sortierung": 9999}
+
+    for item in lane_results:
+        teilnehmer = item["teilnehmer"]
+        altersklasse = altersklasse_for_birth_year(altersklassen, teilnehmer.geburtsjahr)
+        item["altersklasse"] = altersklasse
+        if altersklasse:
+            group = groups_by_id.setdefault(
+                altersklasse.id,
+                {"altersklasse": altersklasse, "results": [], "sortierung": altersklasse.sortierung or 0},
+            )
+        else:
+            group = fallback
+        group["results"].append(item)
+
+    for group in groups_by_id.values():
+        group["results"].sort(key=lambda item: (item["zeit_ms"], item["teilnehmer"].id))
+        grouped.append(group)
+    if fallback["results"]:
+        fallback["results"].sort(key=lambda item: (item["zeit_ms"], item["teilnehmer"].id))
+        grouped.append(fallback)
+    grouped.sort(key=lambda group: (group["sortierung"], altersklasse_label(group["altersklasse"])))
+    return grouped
+
+
 def build_results(db):
     results = []
+    altersklassen = db.query(Altersklasse).order_by(Altersklasse.sortierung, Altersklasse.id).all()
     bewerbe = (
         db.query(Bewerb)
         .options(
@@ -333,7 +445,18 @@ def build_results(db):
                         }
                     )
         lane_results.sort(key=lambda item: item["zeit_ms"])
-        results.append({"bewerb": bewerb, "results": lane_results})
+        result_groups = (
+            [{"altersklasse": None, "results": lane_results, "sortierung": 0}]
+            if is_staffel_bewerb(bewerb)
+            else group_results_by_altersklasse(lane_results, altersklassen)
+        )
+        results.append(
+            {
+                "bewerb": bewerb,
+                "results": lane_results,
+                "altersklassen": result_groups,
+            }
+        )
     return results
 
 
@@ -502,17 +625,19 @@ def build_day_fastest_results(db):
 def results_csv(results):
     output = StringIO()
     writer = csv.writer(output, delimiter=";")
-    writer.writerow(["Platz", "Bewerb", "Teilnehmer", "Zeit"])
+    writer.writerow(["Platz", "Bewerb", "Altersklasse", "Teilnehmer", "Zeit"])
     for bewerb_data in results:
-        for rank, item in enumerate(bewerb_data["results"], start=1):
-            writer.writerow(
-                [
-                    rank,
-                    bewerb_data["bewerb"].full_name(),
-                    item["teilnehmer"].display_name(),
-                    format_ms(item["zeit_ms"]),
-                ]
-            )
+        for group in bewerb_data["altersklassen"]:
+            for rank, item in enumerate(group["results"], start=1):
+                writer.writerow(
+                    [
+                        rank,
+                        bewerb_data["bewerb"].full_name(),
+                        result_group_label(bewerb_data["bewerb"], group),
+                        item["teilnehmer"].display_name(),
+                        format_ms(item["zeit_ms"]),
+                    ]
+                )
     return output.getvalue().encode("utf-8")
 
 
@@ -541,6 +666,26 @@ def draw_pdf_frame(canvas, doc):
     canvas.drawString(18 * mm, 6 * mm, "Ortsmeisterschaften Ergebnisliste")
     canvas.drawRightString(width - 18 * mm, 6 * mm, f"Seite {doc.page}")
     canvas.restoreState()
+
+
+def result_table_style():
+    return TableStyle(
+        [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2933")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+            ("ALIGN", (0, 0), (0, -1), "CENTER"),
+            ("ALIGN", (2, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f8fa")]),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7dce1")),
+            ("LINEBELOW", (0, 0), (-1, 0), 1, colors.HexColor("#c4001a")),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]
+    )
 
 
 def build_results_pdf(results):
@@ -592,6 +737,18 @@ def build_results_pdf(results):
             spaceAfter=2 * mm,
         )
     )
+    styles.add(
+        ParagraphStyle(
+            name="AgeClassTitle",
+            parent=styles["Heading3"],
+            fontName="Helvetica-Bold",
+            fontSize=10,
+            leading=12,
+            textColor=colors.HexColor("#1f2933"),
+            spaceBefore=2 * mm,
+            spaceAfter=1 * mm,
+        )
+    )
 
     story = [
         Paragraph("Ortsmeisterschaften", styles["ResultTitle"]),
@@ -604,42 +761,29 @@ def build_results_pdf(results):
     table_header = ["Platz", "Teilnehmer", "Lauf", "Bahn", "Zeit"]
     for bewerb_data in results:
         story.append(Paragraph(bewerb_data["bewerb"].full_name(), styles["CompetitionTitle"]))
-        rows = [table_header]
-        for rank, item in enumerate(bewerb_data["results"], start=1):
-            rows.append(
-                [
-                    str(rank),
-                    item["teilnehmer"].display_name(),
-                    str(item["lauf"].laufnummer),
-                    str(item["bahn"].bahn),
-                    format_ms(item["zeit_ms"]),
-                ]
-            )
+        if not bewerb_data["results"]:
+            rows = [table_header, ["-", "Noch keine Zeiten vorhanden", "-", "-", "-"]]
+            table = Table(rows, colWidths=[17 * mm, 82 * mm, 18 * mm, 18 * mm, 28 * mm], repeatRows=1)
+            table.setStyle(result_table_style())
+            story.extend([table, Spacer(1, 4 * mm)])
+            continue
 
-        if len(rows) == 1:
-            rows.append(["-", "Noch keine Zeiten vorhanden", "-", "-", "-"])
-
-        table = Table(rows, colWidths=[17 * mm, 82 * mm, 18 * mm, 18 * mm, 28 * mm], repeatRows=1)
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2933")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 9),
-                    ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-                    ("ALIGN", (0, 0), (0, -1), "CENTER"),
-                    ("ALIGN", (2, 0), (-1, -1), "CENTER"),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f8fa")]),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d7dce1")),
-                    ("LINEBELOW", (0, 0), (-1, 0), 1, colors.HexColor("#c4001a")),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                ]
-            )
-        )
-        story.extend([table, Spacer(1, 4 * mm)])
+        for group in bewerb_data["altersklassen"]:
+            story.append(Paragraph(result_group_label(bewerb_data["bewerb"], group), styles["AgeClassTitle"]))
+            rows = [table_header]
+            for rank, item in enumerate(group["results"], start=1):
+                rows.append(
+                    [
+                        str(rank),
+                        item["teilnehmer"].display_name(),
+                        str(item["lauf"].laufnummer),
+                        str(item["bahn"].bahn),
+                        format_ms(item["zeit_ms"]),
+                    ]
+                )
+            table = Table(rows, colWidths=[17 * mm, 82 * mm, 18 * mm, 18 * mm, 28 * mm], repeatRows=1)
+            table.setStyle(result_table_style())
+            story.extend([table, Spacer(1, 3 * mm)])
 
     doc.build(story, onFirstPage=draw_pdf_frame, onLaterPages=draw_pdf_frame)
     buffer.seek(0)
@@ -861,13 +1005,23 @@ def build_full_report_pdf(db):
     add_table(story, start_rows, [20 * mm, 14 * mm, 14 * mm, 110 * mm])
 
     story.append(Paragraph("Ergebnisse", styles["ReportSection"]))
-    result_rows = [["Platz", "Bewerb", "Teilnehmer/Staffel", "Zeit"]]
+    result_rows = [["Platz", "Bewerb", "Altersklasse", "Teilnehmer/Staffel", "Zeit"]]
     for bewerb_data in results:
         is_relay = is_staffel_bewerb(bewerb_data["bewerb"])
-        for rank, item in enumerate(bewerb_data["results"], start=1):
-            name = item["teilnehmer"].staffel if is_relay and item["teilnehmer"].staffel else item["teilnehmer"].display_name()
-            result_rows.append([str(rank), f"ID {bewerb_data['bewerb'].id}", name, format_ms(item["zeit_ms"])])
-    add_table(story, result_rows, [14 * mm, 22 * mm, 92 * mm, 30 * mm])
+        result_groups = [{"altersklasse": None, "results": bewerb_data["results"]}] if is_relay else bewerb_data["altersklassen"]
+        for group in result_groups:
+            for rank, item in enumerate(group["results"], start=1):
+                name = item["teilnehmer"].staffel if is_relay and item["teilnehmer"].staffel else item["teilnehmer"].display_name()
+                result_rows.append(
+                    [
+                        str(rank),
+                        f"ID {bewerb_data['bewerb'].id}",
+                        result_group_label(bewerb_data["bewerb"], group),
+                        name,
+                        format_ms(item["zeit_ms"]),
+                    ]
+                )
+    add_table(story, result_rows, [12 * mm, 18 * mm, 48 * mm, 58 * mm, 22 * mm])
 
     story.append(Paragraph("Ortsmeister", styles["ReportSection"]))
     om_bewerbe_m = [b for b in bewerbe if not is_staffel_bewerb(b) and b.ortsmeister_relevant and normalized_gender(b.geschlecht) in {"maennlich", "mixed"}]
@@ -904,25 +1058,30 @@ def certificate_rows(results, max_place):
     rows = []
     for bewerb_data in results:
         is_relay = is_staffel_bewerb(bewerb_data["bewerb"])
-        for place, item in enumerate(bewerb_data["results"], start=1):
-            if max_place and place > max_place:
-                continue
-            certificate_name = (
-                item["teilnehmer"].staffel
-                if is_relay and item["teilnehmer"] and item["teilnehmer"].staffel
-                else item["teilnehmer"].display_name()
-            )
-            copies = 4 if is_relay else 1
-            for copy_index in range(1, copies + 1):
-                rows.append(
-                    {
-                        "place": place,
-                        "name": certificate_name,
-                        "competition": bewerb_data["bewerb"].full_name(),
-                        "time": format_ms(item["zeit_ms"]),
-                        "copy": copy_index,
-                    }
+        result_groups = [{"altersklasse": None, "results": bewerb_data["results"]}] if is_relay else bewerb_data["altersklassen"]
+        for group in result_groups:
+            for place, item in enumerate(group["results"], start=1):
+                if max_place and place > max_place:
+                    continue
+                certificate_name = (
+                    item["teilnehmer"].staffel
+                    if is_relay and item["teilnehmer"] and item["teilnehmer"].staffel
+                    else item["teilnehmer"].display_name()
                 )
+                competition = bewerb_data["bewerb"].full_name()
+                if not is_relay:
+                    competition = f"{competition} - {altersklasse_label(group['altersklasse'])}"
+                copies = 4 if is_relay else 1
+                for copy_index in range(1, copies + 1):
+                    rows.append(
+                        {
+                            "place": place,
+                            "name": certificate_name,
+                            "competition": competition,
+                            "time": format_ms(item["zeit_ms"]),
+                            "copy": copy_index,
+                        }
+                    )
     return rows
 
 
@@ -1574,6 +1733,138 @@ def page_settings(db):
         st.info("Keine Bewerbe vorhanden.")
 
 
+def page_altersklassen(db):
+    st.title("Altersklassen")
+    st.caption("Klasseneinteilung fuer die Auswertung nach Geburtsjahr.")
+
+    with st.form("altersklasse_form", clear_on_submit=True):
+        st.subheader("Altersklasse anlegen")
+        name_col, dist_col, from_col, to_col, sort_col = st.columns([3, 2, 2, 2, 1])
+        name = name_col.text_input("Name", placeholder="Kinder")
+        distanz = dist_col.text_input("Distanz", placeholder="25 m")
+        jahr_von = from_col.number_input("Jahr von", min_value=0, max_value=2100, value=2018, step=1)
+        jahr_bis = to_col.number_input("Jahr bis", min_value=0, max_value=2100, value=2100, step=1)
+        sortierung = sort_col.number_input("Sort.", min_value=0, max_value=999, value=1, step=1)
+        submitted = st.form_submit_button("Altersklasse speichern", type="primary")
+
+    if submitted:
+        if name.strip() and int(jahr_von) <= int(jahr_bis):
+            db.add(
+                Altersklasse(
+                    name=name.strip(),
+                    distanz=distanz.strip(),
+                    jahr_von=int(jahr_von),
+                    jahr_bis=int(jahr_bis),
+                    sortierung=int(sortierung),
+                )
+            )
+            db.commit()
+            st.success("Altersklasse wurde angelegt.")
+            refresh()
+        else:
+            st.error("Bitte gueltige Angaben fuer die Altersklasse eintragen.")
+
+    st.subheader("Klasseneinteilung")
+    altersklassen = db.query(Altersklasse).order_by(Altersklasse.sortierung, Altersklasse.id).all()
+    if not altersklassen:
+        st.info("Keine Altersklassen vorhanden.")
+        if st.button("Standard-Klasseneinteilung anlegen", type="primary"):
+            create_default_altersklassen()
+            st.success("Standard-Klasseneinteilung wurde angelegt.")
+            refresh()
+        return
+
+    header_cols = st.columns([1, 3, 2, 2, 2, 3, 1])
+    header_cols[0].markdown("**Sort.**")
+    header_cols[1].markdown("**Klasse**")
+    header_cols[2].markdown("**Distanz**")
+    header_cols[3].markdown("**Von**")
+    header_cols[4].markdown("**Bis**")
+    header_cols[5].markdown("**Anzeige**")
+    header_cols[6].markdown("**Loeschen**")
+
+    for item in altersklassen:
+        row_cols = st.columns([1, 3, 2, 2, 2, 3, 1])
+        row_cols[0].number_input(
+            "Sort.",
+            min_value=0,
+            max_value=999,
+            value=item.sortierung or 0,
+            step=1,
+            key=f"ak_sortierung_{item.id}",
+            label_visibility="collapsed",
+        )
+        row_cols[1].text_input(
+            "Klasse",
+            value=item.name,
+            key=f"ak_name_{item.id}",
+            label_visibility="collapsed",
+        )
+        row_cols[2].text_input(
+            "Distanz",
+            value=item.distanz or "",
+            key=f"ak_distanz_{item.id}",
+            label_visibility="collapsed",
+        )
+        row_cols[3].number_input(
+            "Von",
+            min_value=0,
+            max_value=2100,
+            value=item.jahr_von,
+            step=1,
+            key=f"ak_von_{item.id}",
+            label_visibility="collapsed",
+        )
+        row_cols[4].number_input(
+            "Bis",
+            min_value=0,
+            max_value=2100,
+            value=item.jahr_bis,
+            step=1,
+            key=f"ak_bis_{item.id}",
+            label_visibility="collapsed",
+        )
+        row_cols[5].write(altersklasse_label(item))
+        if row_cols[6].button("X", key=f"delete_altersklasse_{item.id}", help="Altersklasse loeschen"):
+            db.delete(item)
+            db.commit()
+            st.success("Altersklasse wurde geloescht.")
+            refresh()
+
+    save_col, reset_col = st.columns([1, 1])
+    if save_col.button("Altersklassen speichern", type="primary"):
+        valid = True
+        for item in altersklassen:
+            altersklasse = db.query(Altersklasse).get(item.id)
+            if not altersklasse:
+                continue
+            name = st.session_state.get(f"ak_name_{item.id}", "").strip()
+            jahr_von = int(st.session_state.get(f"ak_von_{item.id}", item.jahr_von))
+            jahr_bis = int(st.session_state.get(f"ak_bis_{item.id}", item.jahr_bis))
+            if not name or jahr_von > jahr_bis:
+                valid = False
+                continue
+            altersklasse.name = name
+            altersklasse.distanz = st.session_state.get(f"ak_distanz_{item.id}", "").strip()
+            altersklasse.jahr_von = jahr_von
+            altersklasse.jahr_bis = jahr_bis
+            altersklasse.sortierung = int(st.session_state.get(f"ak_sortierung_{item.id}", item.sortierung or 0))
+        if valid:
+            db.commit()
+            st.success("Altersklassen wurden gespeichert.")
+            refresh()
+        else:
+            db.rollback()
+            st.error("Bitte pruefe Name und Jahrgangsbereich der Altersklassen.")
+
+    if reset_col.button("Standard-Klasseneinteilung wiederherstellen"):
+        db.query(Altersklasse).delete(synchronize_session=False)
+        db.commit()
+        create_default_altersklassen()
+        st.success("Standard-Klasseneinteilung wurde wiederhergestellt.")
+        refresh()
+
+
 def render_startlist_competitions(db, bewerbe, empty_message, run_numbers):
     if not bewerbe:
         st.info(empty_message)
@@ -1783,20 +2074,24 @@ def page_ergebnisse(db):
 
     for bewerb_data in results:
         st.subheader(bewerb_data["bewerb"].full_name())
-        rows = [
-            {
-                "Platz": rank,
-                "Teilnehmer": item["teilnehmer"].display_name(),
-                "Lauf": item["lauf"].laufnummer,
-                "Bahn": item["bahn"].bahn,
-                "Zeit": format_ms(item["zeit_ms"]),
-            }
-            for rank, item in enumerate(bewerb_data["results"], start=1)
-        ]
-        if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        else:
+        if not bewerb_data["results"]:
             st.info("Noch keine Zeiten vorhanden.")
+            continue
+        for group in bewerb_data["altersklassen"]:
+            group_label = result_group_label(bewerb_data["bewerb"], group)
+            st.markdown(f"**{group_label}**")
+            rows = [
+                {
+                    "Platz": rank,
+                    "Altersklasse": group_label,
+                    "Teilnehmer": item["teilnehmer"].display_name(),
+                    "Lauf": item["lauf"].laufnummer,
+                    "Bahn": item["bahn"].bahn,
+                    "Zeit": format_ms(item["zeit_ms"]),
+                }
+                for rank, item in enumerate(group["results"], start=1)
+            ]
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def page_staffelwertung(db):
@@ -2084,6 +2379,7 @@ def main():
             [
                 "Dashboard",
                 "Einstellungen",
+                "Altersklassen",
                 "Anmeldung",
                 "Startliste",
                 "Zeitnehmung",
@@ -2103,6 +2399,8 @@ def main():
             page_anmeldung(db)
         elif page == "Einstellungen":
             page_settings(db)
+        elif page == "Altersklassen":
+            page_altersklassen(db)
         elif page == "Startliste":
             page_startliste(db)
         elif page == "Zeitnehmung":

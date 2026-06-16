@@ -28,6 +28,29 @@ class Jahrgang(Base):
         return f"<Jahrgang {self.name}>"
 
 
+class Altersklasse(Base):
+    __tablename__ = "altersklasse"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    distanz = Column(String(50), default="")
+    jahr_von = Column(Integer, nullable=False)
+    jahr_bis = Column(Integer, nullable=False)
+    sortierung = Column(Integer, default=0)
+
+    def __repr__(self):
+        return f"<Altersklasse {self.name}>"
+
+    def display_range(self):
+        if self.jahr_von <= 0:
+            return f"Jg. {self.jahr_bis} und aelter"
+        if self.jahr_bis >= 2100:
+            return f"Jg. {self.jahr_von} und juenger"
+        if self.jahr_von == self.jahr_bis:
+            return f"Jg. {self.jahr_von}"
+        return f"Jg. {self.jahr_bis} - {self.jahr_von}"
+
+
 class Bewerb(Base):
     __tablename__ = "bewerb"
 
