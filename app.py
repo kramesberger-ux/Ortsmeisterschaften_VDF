@@ -1495,11 +1495,10 @@ def ortsmeister_certificate_rows(db):
         ("Ortsmeister Weiblich", "weiblich", female_bewerbe),
     ]:
         results = build_ortsmeister_results(db, [bewerb.id for bewerb in selected_bewerbe], gender)
-        if results:
-            item = results[0]
+        for place, item in enumerate(results[:3], start=1):
             rows.append(
                 {
-                    "place": 1,
+                    "place": place,
                     "name": item["teilnehmer"].display_name(),
                     "competition": label,
                     "age_class": "",
